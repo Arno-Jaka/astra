@@ -24,6 +24,13 @@ export const VIKING: TrekLayer = {
   credit: 'NASA/JPL/Mars Trek — Viking',
 }
 
+export const MOLA_SHADE: TrekLayer = {
+  id: 'Mars_MGS_MOLA_ClrShade_merge_global_463m',
+  label: 'MOLA color hillshade',
+  maximumLevel: 7,
+  credit: 'NASA/JPL/USGS — MOLA',
+}
+
 export function createTrekProvider(
   layer: TrekLayer,
 ): WebMapTileServiceImageryProvider {

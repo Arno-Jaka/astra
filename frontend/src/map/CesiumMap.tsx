@@ -3,24 +3,309 @@ import {
   BoundingSphere,
   Cartesian2,
   Cartesian3,
+  Cartographic,
   Color,
-  EllipsoidTerrainProvider,
+  ConeEmitter,
+  ConstantPositionProperty,
+  ConstantProperty,
   Globe,
   HeadingPitchRange,
+  HeightReference,
+  Math as CesiumMath,
+  Matrix3,
+  Matrix4,
+  Model,
+  ModelAnimationLoop,
+  NearFarScalar,
+  ParticleSystem,
+  PerspectiveFrustum,
+  PolylineDashMaterialProperty,
+  PolylineGlowMaterialProperty,
+  sampleTerrain,
+  ScreenSpaceEventHandler,
+  ScreenSpaceEventType,
+  Transforms,
   VerticalOrigin,
   Viewer,
 } from 'cesium'
+import type {
+  ImageryLayer,
+  ImageryProvider,
+  TerrainProvider,
+} from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
+import DriveHud from '../components/DriveHud'
+import LayerPanel from '../components/LayerPanel'
 import {
   briefingSchema,
   conditionsSchema,
   routeSchema,
   useAppStore,
+  type RouteData,
+  type RouteDanger,
+  type RoutePhase,
 } from '../store/appStore'
+import { useDriveStore } from '../store/driveStore'
+import { useLayerStore, type BaseLayerId } from '../store/layerStore'
 import { onCommand } from '../ws/commandChannel'
-import { MARS, VIKING, createTrekProvider } from './trek'
+import {
+  sampleRoute,
+  selectTraverse,
+  wrapPi,
+  type RouteSample,
+  type TraversableRoute,
+} from './routePath'
+import { createSlopeOverlayProvider } from './slopeLayer'
+import { createMolaTerrainProvider } from './terrain'
+import { MARS, MOLA_SHADE, VIKING, createTrekProvider } from './trek'
 
-const ROUTE_HEIGHT = 2500
+const ROVER_URL = '/models/perseverance.glb'
+/** Lift the rover origin (wheel plane) this far above the sampled ground. */
+const ROVER_GROUND_CLEARANCE = 0.15
+/** Cap the terrain-tilt of the rover so LOD seams never flip it on its side. */
+const ROVER_MAX_TILT_RAD = CesiumMath.toRadians(32)
+/** Half-spacing of the terrain probes used for the local surface normal. */
+const TERRAIN_SAMPLE_M = 18
+/** Degrees of latitude per metre on Mars ((pi/180) * 3_396_190 m). */
+const METERS_PER_DEG = 59_238
+
+/**
+ * GTA-style third-person chase camera: the user can drag to orbit around
+ * the rover and scroll to zoom while it drives; the camera recenters behind
+ * the rover when released and is always pushed above the terrain.
+ */
+const ORBIT = {
+  defaultPitch: 0.2,
+  defaultDistance: 7.5,
+  minDistance: 3.5,
+  maxDistance: 20,
+  /** Never dip below horizontal: low angles clip into terrain on slopes. */
+  minPitch: 0.05,
+  maxPitch: 1.2,
+  /** Radians of camera yaw per pixel of drag. */
+  dragYawPerPx: 0.006,
+  dragPitchPerPx: 0.005,
+  /** How fast the camera drifts back behind the rover (per second). */
+  recenterPerS: 1.5,
+  margin: 3.0,
+} as const
+
+/**
+ * Suspension: the body follows the terrain through a spring, so crests and
+ * dips read as physical bumps (limited airtime, limited wheel squish) and
+ * feed a smoothed pitch kick. The camera deliberately does NOT ride the
+ * suspension — it keeps the rover centered on its own smoothed height.
+ */
+const SUSPENSION = {
+  springPerS: 6,
+  maxAirM: 0.35,
+  maxSquishM: 0.12,
+  tiltGain: 0.0025,
+  maxTiltRad: 0.08,
+  /** How fast the pitch kick reacts (smoothing keeps LOD spikes invisible). */
+  tiltSmoothPerS: 8,
+} as const
+
+/**
+ * Chase-camera behaviour: horizontal position tracks the rover rigidly so
+ * it stays centered, while height follows a slow spring so suspension bumps
+ * never reach the lens. The aim point sits at rover-mast height, slightly
+ * ahead along the heading so the view shows the terrain being driven into.
+ */
+const CHASE = {
+  heightSpringPerS: 5,
+  aimUpM: 1.15,
+  aimLeadM: 2.5,
+  /** Heading/normal smoothing rates (per second, frame-rate independent). */
+  headingPerS: 10,
+  normalPerS: 16,
+} as const
+
+/** Drive controls while the scout simulation runs. */
+const KEYS: Record<
+  'speedUp' | 'slowDown' | 'pause' | 'recenter' | 'end',
+  readonly string[]
+> = {
+  speedUp: ['ArrowUp', 'KeyW'],
+  slowDown: ['ArrowDown', 'KeyS'],
+  pause: ['Space'],
+  recenter: ['KeyC'],
+  end: ['Escape'],
+}
+const SPEED_MIN = 0.25
+const SPEED_MAX = 4
+const SPEED_STEP = 1.5
+
+/**
+ * Terrain pre-sampling for the drive: `sampleTerrain` over route points at
+ * ~the rendered tile level gives mesh-consistent heights along the whole
+ * corridor (the 0.5 km route-profile interpolation can sit tens of metres
+ * below the real surface in rugged terrain), and the same `/api/dem/tile`
+ * requests warm the browser cache the globe will hit during the drive.
+ */
+const CORRIDOR = {
+  level: 12,
+  maxPoints: 400,
+  timeoutMs: 6000,
+} as const
+
+/** Extra ground clearance per unit of body tilt (metres at full tilt cap). */
+const TILT_CLEARANCE_M = 1.0
+
+/**
+ * Crash simulation on a hazardous traverse. The mission slope limit acts as
+ * the vehicle's certified stability envelope: the rover loses control
+ * (rollover) when the live grade passes the envelope (max(12°, limit +
+ * 0.25°), matching the backend danger classification) and falls on
+ * cliff-like grades, then tumbles downhill, bounces, and catches fire.
+ * Compliant routes stay at or below the requested limit, so the safe
+ * route never crashes; the fire is a dramatization, not a physical
+ * hazard model (MOLA grades are regional estimates).
+ */
+const CRASH = {
+  minRolloverGradeDeg: 12,
+  gradeOverLimitDeg: 0.25,
+  fallGradeDeg: 35,
+  /** Peak downhill slide speed while tumbling (m/s); eases out to zero. */
+  slideMaxMps: 22,
+  /** Body roll rate at peak slide speed (rad/s); eases out with the slide. */
+  rollRateRadS: 9,
+  tumbleMs: 2600,
+  /** Bounce height of the first touchdown (metres, decaying per bounce). */
+  firstBounceM: 0.9,
+  fireEmissionPerS: 34,
+  smokeEmissionPerS: 14,
+  /** How long the burning wreck is held before the drive ends (ms). */
+  holdAfterCrashMs: 4200,
+} as const
+
+/** Soft radial-gradient particle texture for the fire and smoke plumes. */
+function makeParticleTexture(): HTMLCanvasElement {
+  const canvas = document.createElement('canvas')
+  canvas.width = 64
+  canvas.height = 64
+  const context = canvas.getContext('2d')
+  if (context) {
+    const gradient = context.createRadialGradient(32, 32, 2, 32, 32, 30)
+    gradient.addColorStop(0, 'rgba(255,255,255,1.0)')
+    gradient.addColorStop(0.4, 'rgba(255,255,255,0.55)')
+    gradient.addColorStop(1, 'rgba(255,255,255,0.0)')
+    context.fillStyle = gradient
+    context.fillRect(0, 0, 64, 64)
+  }
+  return canvas
+}
+
+/** Camera pose while the user scrubs the traverse preview (metres, ENU). */
+const PREVIEW = {
+  distance: 420,
+  height: 190,
+  lookAhead: 820,
+  targetHeight: 30,
+  margin: 90,
+} as const
+const SCOUT_MIN_MS = 45_000
+const SCOUT_MAX_MS = 150_000
+const SCOUT_MS_PER_KM = 4_000
+
+type SiteInfo = {
+  name: string
+  lon: number
+  lat: number
+  kind: string
+  description: string
+  source_url: string
+}
+
+type StationInfo = {
+  station_name: string
+  site_name: string
+  lon: number
+  lat: number
+  sol: string | number | null
+  min_temp_c: number | null
+  max_temp_c: number | null
+  pressure_pa: number | null
+}
+
+type PoseOptions = {
+  distance: number
+  height: number
+  lookAhead: number
+  targetHeight: number
+  margin: number
+}
+
+type OrbitState = {
+  yaw: number
+  pitch: number
+  distance: number
+  dragging: boolean
+}
+
+/**
+ * Pre-sample the route corridor against the terrain provider at the
+ * rendered tile level. Returns a distance→height lookup (mesh-consistent,
+ * ~200–500 m spacing) or null if it could not complete in time. Heights
+ * come from the same heightmaps the globe renders, so the rover keeps a
+ * solid ground reference even while tiles stream in behind the
+ * time-compressed drive. Fetched tiles are HTTP-cached for the drive.
+ */
+async function presampleCorridor(
+  route: TraversableRoute,
+  provider: TerrainProvider,
+): Promise<((distanceKm: number) => number | undefined) | null> {
+  const points = route.coordinates
+  if (points.length < 2) return null
+  const stride = Math.max(1, Math.ceil(points.length / CORRIDOR.maxPoints))
+  const indices: number[] = []
+  for (let index = 0; index < points.length; index += stride) {
+    indices.push(index)
+  }
+  if (indices[indices.length - 1] !== points.length - 1) {
+    indices.push(points.length - 1)
+  }
+  const positions = indices.map((index) => {
+    const [lon, lat] = points[index] ?? [0, 0]
+    return Cartographic.fromDegrees(lon, lat)
+  })
+  const timer = new Promise<null>((resolve) => {
+    setTimeout(() => resolve(null), CORRIDOR.timeoutMs)
+  })
+  const sampled = await Promise.race([
+    sampleTerrain(provider, CORRIDOR.level, positions).catch(() => null),
+    timer,
+  ])
+  if (!sampled) return null
+
+  const table = indices
+    .map((index, order) => ({
+      km: route.profile[index]?.distance_km ?? 0,
+      height: sampled[order]?.height,
+    }))
+    .filter((entry) => Number.isFinite(entry.height))
+  if (table.length < 2) return null
+
+  return (distanceKm: number): number | undefined => {
+    const first = table[0]
+    const last = table[table.length - 1]
+    if (distanceKm <= first.km) return first.height
+    if (distanceKm >= last.km) return last.height
+    let low = 0
+    let high = table.length - 1
+    while (high - low > 1) {
+      const mid = (low + high) >> 1
+      if ((table[mid]?.km ?? 0) <= distanceKm) low = mid
+      else high = mid
+    }
+    const a = table[low]
+    const b = table[high]
+    if (!a || !b) return undefined
+    const span = b.km - a.km
+    const fraction = span > 0 ? (distanceKm - a.km) / span : 0
+    return (a.height ?? 0) + ((b.height ?? 0) - (a.height ?? 0)) * fraction
+  }
+}
 
 export default function CesiumMap() {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -28,10 +313,12 @@ export default function CesiumMap() {
   useEffect(() => {
     if (!containerRef.current) return
 
+    const terrainProvider = createMolaTerrainProvider()
     const viewer = new Viewer(containerRef.current, {
       baseLayer: false,
+      ellipsoid: MARS,
       globe: new Globe(MARS),
-      terrainProvider: new EllipsoidTerrainProvider({ ellipsoid: MARS }),
+      terrainProvider,
       animation: false,
       timeline: false,
       baseLayerPicker: false,
@@ -44,15 +331,1170 @@ export default function CesiumMap() {
       fullscreenButton: false,
     })
 
-    viewer.imageryLayers.addImageryProvider(createTrekProvider(VIKING))
-
+    viewer.clock.shouldAnimate = true
     viewer.scene.globe.showGroundAtmosphere = false
+    viewer.scene.globe.depthTestAgainstTerrain = true
     viewer.scene.screenSpaceCameraController.enableCollisionDetection = false
+    ;(viewer.camera.frustum as PerspectiveFrustum).fov = CesiumMath.toRadians(
+      55,
+    )
     if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = false
 
     viewer.camera.setView({
       destination: Cartesian3.fromDegrees(77.7, 18.4, 10_000_000, MARS),
     })
+
+    // --- Imagery layers: NASA base imagery + MOLA-derived slope overlay ---
+    const baseProviders: Record<BaseLayerId, () => ImageryProvider> = {
+      'mola-hillshade': () => createTrekProvider(MOLA_SHADE),
+      viking: () => createTrekProvider(VIKING),
+    }
+    let currentBase: ImageryLayer | null = null
+    let slopeOverlay: ImageryLayer | null = null
+    const applyBase = (id: BaseLayerId) => {
+      if (viewer.isDestroyed()) return
+      if (currentBase) viewer.imageryLayers.remove(currentBase, true)
+      currentBase = viewer.imageryLayers.addImageryProvider(
+        baseProviders[id](),
+        0,
+      )
+    }
+    const applySlope = (on: boolean) => {
+      if (viewer.isDestroyed()) return
+      if (on && !slopeOverlay) {
+        slopeOverlay = viewer.imageryLayers.addImageryProvider(
+          createSlopeOverlayProvider(),
+        )
+      } else if (!on && slopeOverlay) {
+        viewer.imageryLayers.remove(slopeOverlay, true)
+        slopeOverlay = null
+      }
+    }
+    applyBase(useLayerStore.getState().base)
+    applySlope(useLayerStore.getState().slope)
+    const unsubscribeLayers = useLayerStore.subscribe((state, previous) => {
+      if (state.base !== previous.base) applyBase(state.base)
+      if (state.slope !== previous.slope) applySlope(state.slope)
+    })
+
+    const siteEntities: ReturnType<Viewer['entities']['add']>[] = []
+    fetch('/api/sites')
+      .then((response) => (response.ok ? response.json() : []))
+      .then((sites: SiteInfo[]) => {
+        if (viewer.isDestroyed()) return
+        for (const site of sites) {
+          siteEntities.push(
+            viewer.entities.add({
+              id: `astra-site-${site.name}`,
+              position: Cartesian3.fromDegrees(site.lon, site.lat, 0, MARS),
+              point: {
+                pixelSize: 6,
+                color: Color.fromCssColorString('#ffd166'),
+                outlineColor: Color.BLACK,
+                outlineWidth: 1,
+                heightReference: HeightReference.CLAMP_TO_GROUND,
+                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+              },
+              label: {
+                text: site.name,
+                font: '11px sans-serif',
+                fillColor: Color.WHITE,
+                showBackground: true,
+                backgroundColor: Color.fromCssColorString('#00000099'),
+                pixelOffset: new Cartesian2(0, -14),
+                verticalOrigin: VerticalOrigin.BOTTOM,
+                heightReference: HeightReference.CLAMP_TO_GROUND,
+                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                scaleByDistance: new NearFarScalar(1.0e4, 1.0, 1.0e7, 0.4),
+              },
+            }),
+          )
+        }
+      })
+      .catch(() => {})
+
+    // --- Live atmospheric layer: REMS station pin on the globe ---
+    fetch('/api/weather/station')
+      .then((response) =>
+        response.ok
+          ? response.json()
+          : Promise.reject(new Error(String(response.status))),
+      )
+      .then((station: StationInfo) => {
+        if (viewer.isDestroyed()) return
+        const temps =
+          station.min_temp_c !== null && station.max_temp_c !== null
+            ? `${Math.round(station.min_temp_c)}…${Math.round(station.max_temp_c)} °C · `
+            : ''
+        const pressure =
+          station.pressure_pa !== null
+            ? `${Math.round(station.pressure_pa)} Pa`
+            : ''
+        viewer.entities.add({
+          id: 'astra-rems-station',
+          position: Cartesian3.fromDegrees(station.lon, station.lat, 0, MARS),
+          point: {
+            pixelSize: 8,
+            color: Color.fromCssColorString('#34d399'),
+            outlineColor: Color.BLACK,
+            outlineWidth: 2,
+            heightReference: HeightReference.CLAMP_TO_GROUND,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+          label: {
+            text: `${station.station_name} REMS · sol ${station.sol ?? '—'} · ${temps}${pressure}`,
+            font: '11px sans-serif',
+            fillColor: Color.fromCssColorString('#d1fae5'),
+            showBackground: true,
+            backgroundColor: Color.fromCssColorString('#022c22cc'),
+            pixelOffset: new Cartesian2(0, -16),
+            verticalOrigin: VerticalOrigin.BOTTOM,
+            heightReference: HeightReference.CLAMP_TO_GROUND,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        })
+      })
+      .catch(() => {})
+
+    let scoutModel: Model | null = null
+    let scoutFrame = 0
+    let scoutToken = 0
+    let chaseActive = false
+    let chaseHandler: ScreenSpaceEventHandler | null = null
+    let chaseKeydown: ((event: KeyboardEvent) => void) | null = null
+    /** Fire/smoke particle systems at a crash wreck. */
+    let crashParticles: ParticleSystem[] = []
+    let particleTexture: HTMLCanvasElement | null = null
+
+    const destroyChaseControls = () => {
+      if (chaseHandler) {
+        chaseHandler.destroy()
+        chaseHandler = null
+      }
+      if (chaseKeydown) {
+        window.removeEventListener('keydown', chaseKeydown)
+        chaseKeydown = null
+      }
+    }
+
+    const removeScout = () => {
+      scoutToken += 1
+      chaseActive = false
+      viewer.scene.screenSpaceCameraController.enableInputs = true
+      destroyChaseControls()
+      if (scoutFrame) cancelAnimationFrame(scoutFrame)
+      scoutFrame = 0
+      if (scoutModel) {
+        viewer.scene.primitives.remove(scoutModel)
+        scoutModel = null
+      }
+      removeCrashEffects()
+      viewer.entities.removeById('astra-scout')
+      useDriveStore.getState().end()
+      useDriveStore.getState().crashed(null)
+      if (import.meta.env.DEV) {
+        delete (globalThis as unknown as Record<string, unknown>).__astraScout
+        delete (globalThis as unknown as Record<string, unknown>).__astraChase
+      }
+    }
+
+    /** Remove the burning-wreck particle systems, if any. */
+    const removeCrashEffects = () => {
+      for (const system of crashParticles) {
+        viewer.scene.primitives.remove(system)
+      }
+      crashParticles = []
+    }
+
+    /**
+     * Spawn the crash fire and smoke plumes at a wreck position. The plumes
+     * are a scout-simulation dramatization (a rover would not actually
+     * combust in the thin Martian atmosphere), not a physical model.
+     */
+    const spawnFire = (position: Cartesian3) => {
+      particleTexture ??= makeParticleTexture()
+      const frame = Transforms.eastNorthUpToFixedFrame(position, MARS)
+      const fire = new ParticleSystem({
+        modelMatrix: Matrix4.clone(frame),
+        emitter: new ConeEmitter(CesiumMath.toRadians(14)),
+        emissionRate: CRASH.fireEmissionPerS,
+        minimumParticleLife: 0.7,
+        maximumParticleLife: 1.5,
+        minimumSpeed: 2.0,
+        maximumSpeed: 4.5,
+        startScale: 0.7,
+        endScale: 2.4,
+        imageSize: new Cartesian2(1.6, 1.6),
+        sizeInMeters: true,
+        image: particleTexture,
+        startColor: Color.fromCssColorString('#ffd166').withAlpha(0.95),
+        endColor: Color.fromCssColorString('#ef4444').withAlpha(0.0),
+        lifetime: 60,
+      })
+      viewer.scene.primitives.add(fire)
+      crashParticles.push(fire)
+      const smoke = new ParticleSystem({
+        modelMatrix: Matrix4.multiplyByTranslation(
+          frame,
+          new Cartesian3(0, 0, 1.2),
+          new Matrix4(),
+        ),
+        emitter: new ConeEmitter(CesiumMath.toRadians(22)),
+        emissionRate: CRASH.smokeEmissionPerS,
+        minimumParticleLife: 2.5,
+        maximumParticleLife: 4.5,
+        minimumSpeed: 0.8,
+        maximumSpeed: 1.8,
+        startScale: 1.0,
+        endScale: 5.5,
+        imageSize: new Cartesian2(2.4, 2.4),
+        sizeInMeters: true,
+        image: particleTexture,
+        startColor: Color.fromCssColorString('#6b7280').withAlpha(0.5),
+        endColor: Color.fromCssColorString('#111827').withAlpha(0.0),
+        lifetime: 60,
+      })
+      viewer.scene.primitives.add(smoke)
+      crashParticles.push(smoke)
+    }
+
+    const terrainHeightAt = (lon: number, lat: number): number | undefined =>
+      viewer.scene.globe.getHeight(Cartographic.fromDegrees(lon, lat))
+
+    /**
+     * Ground reference for the rover at a route sample: the highest of the
+     * loaded-terrain height under it, the pre-sampled corridor height, and
+     * (only when neither exists) the route-profile elevation. Taking the
+     * maximum keeps the rover from sinking below any known surface estimate
+     * while tile LODs stream around the time-compressed drive — the
+     * worst case is a brief float above a coarse mesh, never a burial.
+     */
+    const groundAt = (
+      sample: RouteSample,
+      corridor: ((distanceKm: number) => number | undefined) | null,
+    ): number => {
+      const refs: number[] = []
+      const terrain = terrainHeightAt(sample.lon, sample.lat)
+      if (terrain !== undefined && Number.isFinite(terrain)) refs.push(terrain)
+      const dense = corridor ? corridor(sample.distanceKm) : undefined
+      if (dense !== undefined && Number.isFinite(dense)) refs.push(dense)
+      if (refs.length === 0) refs.push(sample.elevationM)
+      return Math.max(...refs)
+    }
+
+    /**
+     * Highest known terrain reference under the camera, along the line of
+     * sight toward the rover, and the route-profile ground at the rover
+     * (`floorHint`, always available, used when terrain tiles around the
+     * camera have not streamed in yet). Keeping camera poses above this
+     * floor stops the camera from clipping into landforms while orbiting
+     * and driving — even when a ridge sits between the camera and the
+     * rover. Returns -Infinity when nothing is known, in which case
+     * callers skip the clamp.
+     */
+    const cameraFloorM = (
+      cameraPosition: Cartesian3,
+      target: Cartesian3,
+      floorHint: number,
+    ): number => {
+      const heights: number[] = []
+      const sample = (cartesian: Cartesian3) => {
+        const height = viewer.scene.globe.getHeight(
+          MARS.cartesianToCartographic(cartesian),
+        )
+        if (height !== undefined && Number.isFinite(height)) heights.push(height)
+      }
+      sample(cameraPosition)
+      const towardTarget = Cartesian3.subtract(
+        target,
+        cameraPosition,
+        new Cartesian3(),
+      )
+      for (const fraction of [0.35, 0.6, 0.85]) {
+        sample(
+          Cartesian3.add(
+            cameraPosition,
+            Cartesian3.multiplyByScalar(
+              towardTarget,
+              fraction,
+              new Cartesian3(),
+            ),
+            new Cartesian3(),
+          ),
+        )
+      }
+      if (Number.isFinite(floorHint)) heights.push(floorHint)
+      return heights.length ? Math.max(...heights) : -Infinity
+    }
+
+    /**
+     * Local terrain normal in east-north-up coordinates, from a 4-point
+     * MOLA surface probe. Falls back to straight up when the terrain tiles
+     * around the point are not loaded yet.
+     */
+    const terrainNormalAt = (lon: number, lat: number): Cartesian3 => {
+      const dLat = TERRAIN_SAMPLE_M / METERS_PER_DEG
+      const cosLat = Math.max(0.1, Math.cos((lat * Math.PI) / 180))
+      const dLon = TERRAIN_SAMPLE_M / (METERS_PER_DEG * cosLat)
+      const east = terrainHeightAt(lon + dLon, lat)
+      const west = terrainHeightAt(lon - dLon, lat)
+      const north = terrainHeightAt(lon, lat + dLat)
+      const south = terrainHeightAt(lon, lat - dLat)
+      if (
+        east === undefined ||
+        west === undefined ||
+        north === undefined ||
+        south === undefined
+      ) {
+        return new Cartesian3(0, 0, 1)
+      }
+      const dzDe = (east - west) / (2 * TERRAIN_SAMPLE_M)
+      const dzDn = (north - south) / (2 * TERRAIN_SAMPLE_M)
+      return Cartesian3.normalize(
+        new Cartesian3(-dzDe, -dzDn, 1),
+        new Cartesian3(),
+      )
+    }
+
+    /** Clamp a terrain normal so the rover never tilts past the cap. */
+    const limitTilt = (up: Cartesian3): Cartesian3 => {
+      const normalized = Cartesian3.normalize(up, new Cartesian3())
+      const tilt = Math.acos(Math.min(1, Math.max(-1, normalized.z)))
+      if (tilt <= ROVER_MAX_TILT_RAD || tilt === 0) return normalized
+      const scale = Math.tan(ROVER_MAX_TILT_RAD) / Math.tan(tilt)
+      return Cartesian3.normalize(
+        new Cartesian3(
+          normalized.x * scale,
+          normalized.y * scale,
+          normalized.z,
+        ),
+        new Cartesian3(),
+      )
+    }
+
+    /**
+     * Rover model matrix: keeps the model heading along the travel
+     * direction, tilts the body onto the local terrain plane, and adds a
+     * suspension pitch kick (positive = nose up) from vertical acceleration.
+     * `clearance` lifts the origin above the ground plane, growing with the
+     * body tilt so corners do not dig into slopes. `roll` rotates the body
+     * around its forward axis — used by the crash simulation to tumble.
+     */
+    const roverMatrix = (
+      position: Cartesian3,
+      bearing: number,
+      up: Cartesian3,
+      tilt: number,
+      clearance: number,
+      roll = 0,
+    ): Matrix4 => {
+      const horizontal = new Cartesian3(
+        Math.sin(bearing),
+        Math.cos(bearing),
+        0,
+      )
+      const alongUp = Cartesian3.multiplyByScalar(
+        up,
+        Cartesian3.dot(horizontal, up),
+        new Cartesian3(),
+      )
+      let forward = Cartesian3.normalize(
+        Cartesian3.subtract(horizontal, alongUp, new Cartesian3()),
+        new Cartesian3(),
+      )
+      let bodyUp = Cartesian3.normalize(up, new Cartesian3())
+      if (tilt !== 0) {
+        const cos = Math.cos(tilt)
+        const sin = Math.sin(tilt)
+        const tiltedUp = Cartesian3.normalize(
+          Cartesian3.add(
+            Cartesian3.multiplyByScalar(bodyUp, cos, new Cartesian3()),
+            Cartesian3.multiplyByScalar(forward, sin, new Cartesian3()),
+            new Cartesian3(),
+          ),
+          new Cartesian3(),
+        )
+        const tiltedForward = Cartesian3.normalize(
+          Cartesian3.subtract(
+            Cartesian3.multiplyByScalar(forward, cos, new Cartesian3()),
+            Cartesian3.multiplyByScalar(bodyUp, sin, new Cartesian3()),
+            new Cartesian3(),
+          ),
+          new Cartesian3(),
+        )
+        bodyUp = tiltedUp
+        forward = tiltedForward
+      }
+      if (roll !== 0) {
+        // Rotate the body up-vector around the forward axis; the cross
+        // term is orthogonal to both when the frame is orthonormal.
+        const cos = Math.cos(roll)
+        const sin = Math.sin(roll)
+        bodyUp = Cartesian3.normalize(
+          Cartesian3.add(
+            Cartesian3.multiplyByScalar(bodyUp, cos, new Cartesian3()),
+            Cartesian3.multiplyByScalar(
+              Cartesian3.cross(forward, bodyUp, new Cartesian3()),
+              sin,
+              new Cartesian3(),
+            ),
+            new Cartesian3(),
+          ),
+          new Cartesian3(),
+        )
+      }
+      const right = Cartesian3.cross(bodyUp, forward, new Cartesian3())
+      const rotation = new Matrix3(
+        forward.x,
+        right.x,
+        bodyUp.x,
+        forward.y,
+        right.y,
+        bodyUp.y,
+        forward.z,
+        right.z,
+        bodyUp.z,
+      )
+      const local = Matrix4.fromRotationTranslation(
+        rotation,
+        new Cartesian3(0, 0, clearance),
+      )
+      return Matrix4.multiplyTransformation(
+        Transforms.eastNorthUpToFixedFrame(position, MARS),
+        local,
+        new Matrix4(),
+      )
+    }
+
+    /**
+     * A third-person camera pose behind `position`, looking ahead along
+     * `bearing`, lifted above the terrain by `margin`. Used by the
+     * traverse preview scrubber. `floorHint` is the known ground height at
+     * `position` (from the route profile), used to keep the camera above
+     * landforms even before terrain tiles stream in.
+     */
+    const poseBehind = (
+      position: Cartesian3,
+      bearing: number,
+      opts: PoseOptions,
+      floorHint: number,
+    ) => {
+      const frame = Transforms.eastNorthUpToFixedFrame(position, MARS)
+      let cameraPosition = Matrix4.multiplyByPoint(
+        frame,
+        new Cartesian3(
+          -Math.sin(bearing) * opts.distance,
+          -Math.cos(bearing) * opts.distance,
+          opts.height,
+        ),
+        new Cartesian3(),
+      )
+      const lookAhead = Matrix4.multiplyByPoint(
+        frame,
+        new Cartesian3(
+          Math.sin(bearing) * opts.lookAhead,
+          Math.cos(bearing) * opts.lookAhead,
+          opts.targetHeight,
+        ),
+        new Cartesian3(),
+      )
+      const floor = cameraFloorM(cameraPosition, position, floorHint)
+      if (Number.isFinite(floor)) {
+        const cameraCarto = MARS.cartesianToCartographic(cameraPosition)
+        if (cameraCarto.height < floor + opts.margin) {
+          cameraCarto.height = floor + opts.margin
+          cameraPosition = MARS.cartographicToCartesian(cameraCarto)
+        }
+      }
+      const direction = Cartesian3.normalize(
+        Cartesian3.subtract(lookAhead, cameraPosition, new Cartesian3()),
+        new Cartesian3(),
+      )
+      const up = MARS.geodeticSurfaceNormal(cameraPosition, new Cartesian3())
+      return {
+        destination: cameraPosition,
+        orientation: { direction, up },
+      }
+    }
+
+    /**
+     * Orbit chase-camera pose. The camera is placed relative to `anchor`
+     * (which tracks the rover horizontally but rides a smoothed height, so
+     * suspension bumps never shake the lens) and always looks at `aim` (the
+     * rover), keeping it centered on screen. The user's drag controls
+     * yaw/pitch offsets and scroll controls distance; the pose is lifted
+     * above the terrain floor (camera position, line-of-sight samples, and
+     * route-profile ground via `floorHint`) so landforms stay solid.
+     */
+    const orbitPose = (
+      anchor: Cartesian3,
+      aim: Cartesian3,
+      bearing: number,
+      orbit: OrbitState,
+      floorHint: number,
+    ) => {
+      const frame = Transforms.eastNorthUpToFixedFrame(anchor, MARS)
+      const heading = bearing + orbit.yaw
+      const cosPitch = Math.cos(orbit.pitch)
+      let cameraPosition = Matrix4.multiplyByPoint(
+        frame,
+        new Cartesian3(
+          -Math.sin(heading) * cosPitch * orbit.distance,
+          -Math.cos(heading) * cosPitch * orbit.distance,
+          Math.sin(orbit.pitch) * orbit.distance,
+        ),
+        new Cartesian3(),
+      )
+      const floor = cameraFloorM(cameraPosition, anchor, floorHint)
+      if (Number.isFinite(floor)) {
+        const cameraCarto = MARS.cartesianToCartographic(cameraPosition)
+        if (cameraCarto.height < floor + ORBIT.margin) {
+          cameraCarto.height = floor + ORBIT.margin
+          cameraPosition = MARS.cartographicToCartesian(cameraCarto)
+        }
+      }
+      const direction = Cartesian3.normalize(
+        Cartesian3.subtract(aim, cameraPosition, new Cartesian3()),
+        new Cartesian3(),
+      )
+      const up = MARS.geodeticSurfaceNormal(cameraPosition, new Cartesian3())
+      return {
+        destination: cameraPosition,
+        orientation: { direction, up },
+      }
+    }
+
+    const setPreviewMarkerVisible = (visible: boolean) => {
+      const marker = viewer.entities.getById('astra-preview')
+      if (marker) marker.show = visible
+    }
+
+    /**
+     * Move the preview marker (and optionally the camera) to fraction `t`
+     * of the selected traverse (safe or hazardous). The camera glides
+     * behind the marker through 3D terrain, and the user can still
+     * orbit/zoom freely between scrub events.
+     */
+    const updatePreview = (
+      route: RouteData,
+      t: number,
+      moveCamera: boolean,
+    ) => {
+      const choice = useAppStore.getState().routeChoice
+      const traverse = selectTraverse(route, choice)
+      if (!traverse) return
+      const sample = sampleRoute(traverse, t)
+      const ground = terrainHeightAt(sample.lon, sample.lat)
+      const position = Cartesian3.fromDegrees(
+        sample.lon,
+        sample.lat,
+        0,
+        MARS,
+      )
+      const marker = viewer.entities.getById('astra-preview')
+      if (marker) {
+        marker.position = new ConstantPositionProperty(position)
+        if (marker.label) {
+          marker.label.text = new ConstantProperty(
+            `Preview · ${sample.distanceKm.toFixed(1)} km`,
+          )
+        }
+      }
+      if (!moveCamera) return
+      const cameraGround = ground ?? sample.elevationM
+      const cameraTarget = Cartesian3.fromDegrees(
+        sample.lon,
+        sample.lat,
+        cameraGround,
+        MARS,
+      )
+      viewer.camera.flyTo({
+        ...poseBehind(cameraTarget, sample.bearing, PREVIEW, cameraGround),
+        duration: 0.3,
+      })
+    }
+
+    const clearRoute = () => {
+      removeScout()
+      for (const id of [
+        'astra-route',
+        'astra-route-start',
+        'astra-route-end',
+        'astra-route-label',
+        'astra-preview',
+        'astra-hazardous',
+        'astra-hazardous-label',
+      ]) {
+        viewer.entities.removeById(id)
+      }
+      // Danger pins are drawn per route with generated ids.
+      for (const entity of viewer.entities.values) {
+        if (
+          typeof entity.id === 'string' &&
+          entity.id.startsWith('astra-danger-')
+        ) {
+          viewer.entities.remove(entity)
+        }
+      }
+    }
+
+    const startScout = async (route: RouteData) => {
+      removeScout()
+      setPreviewMarkerVisible(false)
+      const token = ++scoutToken
+      // The scout drives whichever traverse the user selected: the safe
+      // (planner-approved) route or the hazardous direct comparison,
+      // falling back to the safe route when no comparison exists.
+      const choice = useAppStore.getState().routeChoice
+      const hazardous = choice === 'hazardous' ? route.hazardous : null
+      const traverse: TraversableRoute = hazardous ?? route
+      const dangers = hazardous ? hazardous.dangers : (route.dangers ?? [])
+      viewer.entities.add({
+        id: 'astra-scout',
+        position: Cartesian3.fromDegrees(
+          traverse.coordinates[0]?.[0] ?? 0,
+          traverse.coordinates[0]?.[1] ?? 0,
+          0,
+          MARS,
+        ),
+        point: {
+          pixelSize: 7,
+          color: Color.CYAN,
+          outlineColor: Color.BLACK,
+          outlineWidth: 2,
+          heightReference: HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+        label: {
+          text: 'Scout · simulated',
+          font: '11px sans-serif',
+          fillColor: Color.WHITE,
+          showBackground: true,
+          backgroundColor: Color.fromCssColorString('#001018cc'),
+          pixelOffset: new Cartesian2(0, -20),
+          verticalOrigin: VerticalOrigin.BOTTOM,
+          heightReference: HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      })
+
+      // Fire the corridor pre-sample in parallel with the model load: it
+      // warms the /api/dem/tile HTTP cache the globe will hit during the
+      // drive and gives the rover mesh-consistent ground heights.
+      const corridorPromise = presampleCorridor(traverse, terrainProvider)
+
+      try {
+        const model = await Model.fromGltfAsync({
+          url: ROVER_URL,
+          minimumPixelSize: 14,
+          maximumScale: 12,
+        })
+        if (token !== scoutToken) {
+          model.destroy()
+          return
+        }
+        viewer.scene.primitives.add(model)
+        scoutModel = model
+        if (import.meta.env.DEV) {
+          ;(globalThis as unknown as Record<string, unknown>).__astraScout =
+            model
+        }
+        const prepareAnimation = async () => {
+          if (!model.ready) {
+            await new Promise<void>((resolve) => {
+              const remove = model.readyEvent.addEventListener(() => {
+                remove()
+                resolve()
+              })
+            })
+          }
+          if (token !== scoutToken) return
+          try {
+            model.activeAnimations.add({
+              name: 'ArmatureAction',
+              loop: ModelAnimationLoop.NONE,
+            })
+          } catch {
+            try {
+              model.activeAnimations.add({
+                index: 6,
+                loop: ModelAnimationLoop.NONE,
+              })
+            } catch {
+              // The clip is optional; the scout marker still moves.
+            }
+          }
+        }
+        void prepareAnimation()
+      } catch (error) {
+        console.warn('Rover model failed to load; using marker only.', error)
+      }
+
+      const corridor = await corridorPromise
+      if (token !== scoutToken) return
+
+      const startSample = sampleRoute(traverse, 0)
+      const startGround = groundAt(startSample, corridor)
+      const start = Cartesian3.fromDegrees(
+        startSample.lon,
+        startSample.lat,
+        startGround,
+        MARS,
+      )
+      let bearing = startSample.bearing
+      let up = terrainNormalAt(startSample.lon, startSample.lat)
+
+      const orbit: OrbitState = {
+        yaw: 0,
+        pitch: ORBIT.defaultPitch,
+        distance: ORBIT.defaultDistance,
+        dragging: false,
+      }
+      /** Look-at point: mast height above the rover, slightly ahead along
+       *  the heading so the view shows the terrain being driven into. */
+      const aimPoint = (position: Cartesian3, heading: number) => {
+        const frame = Transforms.eastNorthUpToFixedFrame(position, MARS)
+        return Matrix4.multiplyByPoint(
+          frame,
+          new Cartesian3(
+            Math.sin(heading) * CHASE.aimLeadM,
+            Math.cos(heading) * CHASE.aimLeadM,
+            CHASE.aimUpM,
+          ),
+          new Cartesian3(),
+        )
+      }
+
+      // Teleport into the chase pose (offset ~30 m up along the surface
+      // normal), then swoop down into place. A single flyTo from the route
+      // overview would interpolate across kilometers of terrain and clip
+      // through Mount Sharp; the swoop path stays within 30 m of the
+      // already terrain-clamped chase position.
+      const introPose = orbitPose(
+        start,
+        aimPoint(start, bearing),
+        bearing,
+        orbit,
+        startGround,
+      )
+      viewer.camera.setView({
+        destination: Cartesian3.add(
+          introPose.destination,
+          Cartesian3.multiplyByScalar(
+            MARS.geodeticSurfaceNormal(introPose.destination, new Cartesian3()),
+            30,
+            new Cartesian3(),
+          ),
+          new Cartesian3(),
+        ),
+        orientation: introPose.orientation,
+      })
+      await new Promise<void>((resolve) => {
+        viewer.camera.flyTo({
+          ...introPose,
+          duration: 1.2,
+          complete: () => resolve(),
+          cancel: () => resolve(),
+        })
+      })
+      if (token !== scoutToken) return
+      chaseActive = true
+      viewer.scene.screenSpaceCameraController.enableInputs = false
+
+      // Game-style camera controls while driving: drag to orbit, scroll to
+      // zoom. The default camera controller is disabled during the chase.
+      chaseHandler = new ScreenSpaceEventHandler(viewer.canvas)
+      chaseHandler.setInputAction(() => {
+        orbit.dragging = true
+      }, ScreenSpaceEventType.LEFT_DOWN)
+      chaseHandler.setInputAction(() => {
+        orbit.dragging = false
+      }, ScreenSpaceEventType.LEFT_UP)
+      chaseHandler.setInputAction(
+        (movement: ScreenSpaceEventHandler.MotionEvent) => {
+          if (!orbit.dragging) return
+          const dx = movement.endPosition.x - movement.startPosition.x
+          const dy = movement.endPosition.y - movement.startPosition.y
+          orbit.yaw -= dx * ORBIT.dragYawPerPx
+          orbit.pitch = Math.min(
+            ORBIT.maxPitch,
+            Math.max(ORBIT.minPitch, orbit.pitch + dy * ORBIT.dragPitchPerPx),
+          )
+        },
+        ScreenSpaceEventType.MOUSE_MOVE,
+      )
+      chaseHandler.setInputAction((delta: number) => {
+        orbit.distance = Math.min(
+          ORBIT.maxDistance,
+          Math.max(
+            ORBIT.minDistance,
+            orbit.distance * (delta > 0 ? 1.15 : 0.87),
+          ),
+        )
+      }, ScreenSpaceEventType.WHEEL)
+
+      // Keyboard drive controls: speed multiplier, pause, camera recenter,
+      // early exit. Skipped while typing in the chat box.
+      let speedMult = 1
+      let paused = false
+      let abortRequested = false
+      const isTypingTarget = (target: EventTarget | null): boolean =>
+        target instanceof HTMLElement &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable)
+      chaseKeydown = (event: KeyboardEvent) => {
+        if (!chaseActive || isTypingTarget(event.target)) return
+        if (KEYS.speedUp.includes(event.code)) {
+          speedMult = Math.min(SPEED_MAX, speedMult * SPEED_STEP)
+        } else if (KEYS.slowDown.includes(event.code)) {
+          speedMult = Math.max(SPEED_MIN, speedMult / SPEED_STEP)
+        } else if (KEYS.pause.includes(event.code)) {
+          paused = !paused
+        } else if (KEYS.recenter.includes(event.code)) {
+          orbit.yaw = 0
+          orbit.pitch = ORBIT.defaultPitch
+          orbit.distance = ORBIT.defaultDistance
+        } else if (KEYS.end.includes(event.code)) {
+          abortRequested = true
+          return
+        } else {
+          return
+        }
+        event.preventDefault()
+        useDriveStore.getState().update({ speedMult, paused })
+      }
+      window.addEventListener('keydown', chaseKeydown)
+
+      const totalKm =
+        traverse.profile[traverse.profile.length - 1]?.distance_km ?? 0
+      const scoutDurationMs = Math.min(
+        SCOUT_MAX_MS,
+        Math.max(SCOUT_MIN_MS, totalKm * SCOUT_MS_PER_KM),
+      )
+      // Wall-clock progress only advances while unpaused, scaled by the
+      // user's speed multiplier; distance follows a smoothstep ease so the
+      // rover launches from standstill, cruises, and pulls up at the end.
+      let elapsedMs = 0
+      let lastFrame = performance.now()
+      let lastHudPush = 0
+      let lastT = 0
+      // Suspension state: smoothed body height over the sampled terrain.
+      let bodyHeight = startGround
+      let verticalSpeed = 0
+      let tiltSmooth = 0
+      // Camera state: height rides its own slow spring (never the
+      // suspension), while horizontal position tracks the rover rigidly.
+      let cameraHeight = startGround
+
+      /** Shared cleanup for both natural completion and an Esc abort. */
+      const endDrive = () => {
+        scoutFrame = 0
+        chaseActive = false
+        destroyChaseControls()
+        viewer.scene.screenSpaceCameraController.enableInputs = true
+        useDriveStore.getState().end()
+        // Keep the preview marker where the drive stopped. Syncing
+        // subscribedPreviewT stops the store subscription from treating
+        // this as a scrub event and flying the camera away.
+        subscribedPreviewT = lastT
+        const store = useAppStore.getState()
+        store.setPreviewT(lastT)
+        store.setRoutePhase('preview')
+        setPreviewMarkerVisible(true)
+      }
+
+      useDriveStore.getState().start()
+      useDriveStore.getState().update({
+        totalKm,
+        distanceKm: 0,
+        limitDeg: route.slope_limit_deg,
+      })
+
+      // ---- Crash simulation (hazardous traverses) ----
+      // The rover loses control when the live grade passes the mission
+      // slope envelope (max(12°, limit + 0.25°), matching the backend
+      // danger classification) and falls on cliff-like drops; it then
+      // tumbles downhill with decaying bounces and catches fire. Thresholds
+      // are calibrated to real MOLA grades (the steepest Mars terrain
+      // reaches ~25° at MOLA resolution); the fire is a dramatization.
+      const rolloverGradeDeg = Math.max(
+        CRASH.minRolloverGradeDeg,
+        route.slope_limit_deg + CRASH.gradeOverLimitDeg,
+      )
+      type CrashState = {
+        type: 'rollover' | 'fall'
+        detail: string
+        startT: number
+        /** Downhill direction along the route: +1 forward, -1 back. */
+        slideDir: 1 | -1
+        slideM: number
+        roll: number
+        elapsedS: number
+        burned: boolean
+      }
+      let crash: CrashState | null = null
+
+      const beginCrash = (type: 'rollover' | 'fall', sample: RouteSample) => {
+        const absGrade = Math.abs(sample.gradeDeg)
+        const detail =
+          type === 'fall'
+            ? `Fell at km ${sample.distanceKm.toFixed(1)} — ${absGrade.toFixed(0)}° cliff drop; impact and fire.`
+            : `Rollover at km ${sample.distanceKm.toFixed(1)} — ${absGrade.toFixed(0)}° grade exceeded the mission slope envelope.`
+        crash = {
+          type,
+          detail,
+          startT: lastT,
+          slideDir: sample.gradeDeg < 0 ? 1 : -1,
+          slideM: 0,
+          roll: 0,
+          elapsedS: 0,
+          burned: false,
+        }
+        const store = useDriveStore.getState()
+        store.update({ paused: false })
+        store.crashed({
+          type,
+          detail,
+          distanceKm: sample.distanceKm,
+          gradeDeg: sample.gradeDeg,
+        })
+      }
+
+      /** Animate the crash; returns false when the drive has ended. */
+      const stepCrash = (dt: number): boolean => {
+        const state = crash
+        if (!state) return false
+        state.elapsedS += dt
+        const progress = Math.min(1, state.elapsedS / (CRASH.tumbleMs / 1000))
+        // Slide speed and roll rate ease out together: the wreck slows as
+        // the slope sheds its momentum, bounces decaying with it.
+        const speedFactor = (1 - progress) * (1 - progress)
+        const slideMps = CRASH.slideMaxMps * speedFactor
+        state.slideM += slideMps * dt
+        state.roll += CRASH.rollRateRadS * speedFactor * dt
+        const totalMeters = Math.max(totalKm * 1000, 1)
+        const t = Math.min(
+          1,
+          Math.max(0, state.startT + (state.slideM / totalMeters) * state.slideDir),
+        )
+        const sample = sampleRoute(traverse, t)
+        const ground = groundAt(sample, corridor)
+        const bounce =
+          CRASH.firstBounceM *
+          speedFactor *
+          Math.abs(Math.sin(state.elapsedS * 8))
+        const position = Cartesian3.fromDegrees(
+          sample.lon,
+          sample.lat,
+          ground + bounce,
+          MARS,
+        )
+        if (scoutModel) {
+          scoutModel.modelMatrix = roverMatrix(
+            position,
+            bearing,
+            up,
+            0,
+            ROVER_GROUND_CLEARANCE,
+            state.roll,
+          )
+        }
+        const scout = viewer.entities.getById('astra-scout')
+        if (scout) scout.position = new ConstantPositionProperty(position)
+
+        if (chaseActive) {
+          if (!orbit.dragging) {
+            orbit.yaw *= Math.exp(-ORBIT.recenterPerS * dt)
+          }
+          cameraHeight +=
+            (ground - cameraHeight) *
+            (1 - Math.exp(-CHASE.heightSpringPerS * dt))
+          const anchor = Cartesian3.fromDegrees(
+            sample.lon,
+            sample.lat,
+            cameraHeight,
+            MARS,
+          )
+          viewer.camera.setView(
+            orbitPose(anchor, aimPoint(position, bearing), bearing, orbit, ground),
+          )
+        }
+
+        if (
+          !state.burned &&
+          state.elapsedS * 1000 >= CRASH.tumbleMs
+        ) {
+          state.burned = true
+          spawnFire(position)
+          useDriveStore.getState().update({ distanceKm: sample.distanceKm })
+        }
+        if (
+          state.burned &&
+          state.elapsedS * 1000 >= CRASH.tumbleMs + CRASH.holdAfterCrashMs
+        ) {
+          endDrive()
+          // Recover onto the safe route when the wreck was on the
+          // hazardous comparison, so the safety story lands.
+          const store = useAppStore.getState()
+          if (store.routeChoice !== 'safe' && route.hazardous) {
+            store.setRouteChoice('safe')
+          }
+          return false
+        }
+        return true
+      }
+
+      const step = (now: number) => {
+        if (token !== scoutToken) return
+        if (abortRequested || useDriveStore.getState().stopRequested) {
+          endDrive()
+          return
+        }
+        const dt = Math.min(0.1, Math.max(0.001, (now - lastFrame) / 1000))
+        lastFrame = now
+        if (crash) {
+          if (stepCrash(dt)) scoutFrame = requestAnimationFrame(step)
+          return
+        }
+        if (!paused) elapsedMs += dt * 1000 * speedMult
+        const u = Math.min(1, elapsedMs / scoutDurationMs)
+        const t = u * u * (3 - 2 * u)
+        lastT = t
+        const sample = sampleRoute(traverse, t)
+        const ground = groundAt(sample, corridor)
+
+        // Spring suspension toward the sampled ground: the body lags
+        // crests (airtime) and dips (wheel squish), clamped to small values.
+        const settle = 1 - Math.exp(-SUSPENSION.springPerS * dt)
+        const bodyRise = (ground - bodyHeight) * settle
+        bodyHeight += bodyRise
+        const previousVerticalSpeed = verticalSpeed
+        verticalSpeed = bodyRise / dt
+        const rideHeight = Math.min(
+          Math.max(bodyHeight, ground - SUSPENSION.maxSquishM),
+          ground + SUSPENSION.maxAirM,
+        )
+        const accel = (verticalSpeed - previousVerticalSpeed) / dt
+        const tiltRaw = Math.max(
+          -SUSPENSION.maxTiltRad,
+          Math.min(SUSPENSION.maxTiltRad, accel * SUSPENSION.tiltGain),
+        )
+        // Smooth the pitch kick so DEM/LOD height jumps cannot snap it.
+        tiltSmooth +=
+          (tiltRaw - tiltSmooth) * (1 - Math.exp(-SUSPENSION.tiltSmoothPerS * dt))
+
+        const position = Cartesian3.fromDegrees(
+          sample.lon,
+          sample.lat,
+          rideHeight,
+          MARS,
+        )
+        // Smooth heading toward the route bearing, taking the short way
+        // around the circle (wrapPi; the old inline modulo expression
+        // returned -pi for a zero delta and spun the heading backward).
+        bearing +=
+          wrapPi(sample.bearing - bearing) * (1 - Math.exp(-CHASE.headingPerS * dt))
+        up = Cartesian3.lerp(
+          up,
+          terrainNormalAt(sample.lon, sample.lat),
+          1 - Math.exp(-CHASE.normalPerS * dt),
+          new Cartesian3(),
+        )
+        up = limitTilt(up)
+        // Slope-aware ground clearance: on steep tilts the capped body
+        // normal keeps the nose/tail corners from digging into the hill.
+        const clearance =
+          ROVER_GROUND_CLEARANCE + (1 - up.z) * TILT_CLEARANCE_M
+        if (scoutModel) {
+          scoutModel.modelMatrix = roverMatrix(
+            position,
+            bearing,
+            up,
+            tiltSmooth,
+            clearance,
+          )
+        }
+        const scout = viewer.entities.getById('astra-scout')
+        if (scout) scout.position = new ConstantPositionProperty(position)
+
+        if (chaseActive) {
+          // Recenter behind the rover when the user is not dragging.
+          if (!orbit.dragging) {
+            orbit.yaw *= Math.exp(-ORBIT.recenterPerS * dt)
+            orbit.pitch +=
+              (ORBIT.defaultPitch - orbit.pitch) *
+              (1 - Math.exp(-ORBIT.recenterPerS * 0.6 * dt))
+          }
+          // Camera anchor: horizontal follows the rover exactly (so it
+          // stays centered on screen), height follows a slow spring (so
+          // suspension bumps never reach the lens).
+          cameraHeight +=
+            (ground - cameraHeight) *
+            (1 - Math.exp(-CHASE.heightSpringPerS * dt))
+          const anchor = Cartesian3.fromDegrees(
+            sample.lon,
+            sample.lat,
+            cameraHeight,
+            MARS,
+          )
+          viewer.camera.setView(
+            orbitPose(anchor, aimPoint(position, bearing), bearing, orbit, ground),
+          )
+        }
+        // Throttled telemetry: the HUD, route-panel readouts, scrubber, and
+        // elevation-chart cursor all track the drive live. Passing a
+        // non-fatal danger zone raises the amber slip-risk banner.
+        if (now - lastHudPush > 200) {
+          lastHudPush = now
+          const zone = dangers.find(
+            (candidate) =>
+              Math.abs(sample.distanceKm - candidate.distance_km) <=
+              candidate.span_km / 2 + 0.25,
+          )
+          useDriveStore.getState().warn(zone ? zone.label : null)
+          useDriveStore.getState().update({
+            distanceKm: sample.distanceKm,
+            gradeDeg: sample.gradeDeg,
+            elevationM: sample.elevationM,
+            headingDeg: (CesiumMath.toDegrees(bearing) + 360) % 360,
+            speedMult,
+            paused,
+          })
+          useAppStore.getState().setPreviewT(t)
+        }
+        if (import.meta.env.DEV) {
+          ;(globalThis as unknown as Record<string, unknown>).__astraChase = {
+            bearing,
+            distance: orbit.distance,
+            pitch: orbit.pitch,
+            yaw: orbit.yaw,
+            cameraHeight,
+            roverRideHeight: rideHeight,
+            ground,
+          }
+        }
+        // Crash triggers: beginCrash reports the failure and takes over the
+        // loop — stepCrash owns every frame from the next one on.
+        const absGrade = Math.abs(sample.gradeDeg)
+        if (absGrade >= CRASH.fallGradeDeg) {
+          beginCrash('fall', sample)
+          scoutFrame = requestAnimationFrame(step)
+          return
+        }
+        if (absGrade >= rolloverGradeDeg) {
+          beginCrash('rollover', sample)
+          scoutFrame = requestAnimationFrame(step)
+          return
+        }
+        if (t < 1) {
+          scoutFrame = requestAnimationFrame(step)
+        } else {
+          endDrive()
+        }
+      }
+      scoutFrame = requestAnimationFrame(step)
+    }
 
     const unregister = onCommand('fly_to', async (payload) => {
       const lon = Number(payload.lon)
@@ -64,6 +1506,7 @@ export default function CesiumMap() {
       }
       useAppStore.getState().clearSite()
       viewer.entities.removeById('astra-landing')
+      clearRoute()
       await new Promise<void>((resolve) => {
         viewer.camera.flyTo({
           destination: Cartesian3.fromDegrees(lon, lat, height, MARS),
@@ -88,7 +1531,7 @@ export default function CesiumMap() {
         position: Cartesian3.fromDegrees(
           briefing.landing.lon,
           briefing.landing.lat,
-          ROUTE_HEIGHT,
+          0,
           MARS,
         ),
         point: {
@@ -96,6 +1539,8 @@ export default function CesiumMap() {
           color: Color.CYAN,
           outlineColor: Color.BLACK,
           outlineWidth: 2,
+          heightReference: HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
         },
         label: {
           text: briefing.landing.name,
@@ -105,6 +1550,8 @@ export default function CesiumMap() {
           backgroundColor: Color.fromCssColorString('#000000aa'),
           pixelOffset: new Cartesian2(0, -18),
           verticalOrigin: VerticalOrigin.BOTTOM,
+          heightReference: HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
         },
       })
     })
@@ -114,56 +1561,203 @@ export default function CesiumMap() {
       if (route.coordinates.length < 3) {
         throw new Error('show_route requires at least 3 points')
       }
+      clearRoute()
       useAppStore.getState().setRoute(route)
-      const flat = route.coordinates.flatMap(([lon, lat]) => [
-        lon,
-        lat,
-        ROUTE_HEIGHT,
-      ])
 
-      const positions = Cartesian3.fromDegreesArrayHeights(flat, MARS)
-      viewer.entities.removeById('astra-route')
-      viewer.entities.removeById('astra-route-start')
-      viewer.entities.removeById('astra-route-end')
+      // Route, pins, labels, and markers are clamped to the live terrain, so
+      // they never sink when higher-detail MOLA tiles stream in.
+      const positions = Cartesian3.fromDegreesArray(
+        route.coordinates.flatMap(([lon, lat]) => [lon, lat]),
+        MARS,
+      )
 
       viewer.entities.add({
         id: 'astra-route',
         polyline: {
           positions,
-          width: 6,
-          material: Color.fromCssColorString('#ff8a3d'),
-          clampToGround: false,
-        },
-      })
-      viewer.entities.add({
-        id: 'astra-route-start',
-        position: positions[0],
-        point: {
-          pixelSize: 10,
-          color: Color.LIME,
-          outlineColor: Color.BLACK,
-          outlineWidth: 2,
-        },
-      })
-      viewer.entities.add({
-        id: 'astra-route-end',
-        position: positions[positions.length - 1],
-        point: {
-          pixelSize: 10,
-          color: Color.ORANGE,
-          outlineColor: Color.BLACK,
-          outlineWidth: 2,
+          width: 7,
+          material: new PolylineGlowMaterialProperty({
+            glowPower: 0.18,
+            color: Color.fromCssColorString('#ff8a3d'),
+          }),
+          clampToGround: true,
         },
       })
 
+      const pin = (
+        id: string,
+        lon: number,
+        lat: number,
+        color: Color,
+        text: string,
+      ) =>
+        viewer.entities.add({
+          id,
+          position: Cartesian3.fromDegrees(lon, lat, 0, MARS),
+          point: {
+            pixelSize: 11,
+            color,
+            outlineColor: Color.BLACK,
+            outlineWidth: 2,
+            heightReference: HeightReference.CLAMP_TO_GROUND,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+          label: {
+            text,
+            font: '12px sans-serif',
+            fillColor: Color.WHITE,
+            showBackground: true,
+            backgroundColor: Color.fromCssColorString('#000000cc'),
+            pixelOffset: new Cartesian2(0, -20),
+            verticalOrigin: VerticalOrigin.BOTTOM,
+            heightReference: HeightReference.CLAMP_TO_GROUND,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        })
+
+      const first = route.coordinates[0] ?? [0, 0]
+      const last = route.coordinates[route.coordinates.length - 1] ?? first
+      pin('astra-route-start', first[0], first[1], Color.LIME, route.start)
+      pin('astra-route-end', last[0], last[1], Color.ORANGE, route.end)
+
+      const mid = sampleRoute(route, 0.55)
+      const verdict = route.slope_compliant ? 'Safest route' : 'Direct route'
+      viewer.entities.add({
+        id: 'astra-route-label',
+        position: Cartesian3.fromDegrees(mid.lon, mid.lat, 0, MARS),
+        label: {
+          text: `${verdict} · ${route.distance_km.toFixed(1)} km · max ${route.max_grade_deg.toFixed(1)}°`,
+          font: '12px sans-serif',
+          fillColor: Color.WHITE,
+          showBackground: true,
+          backgroundColor: Color.fromCssColorString('#2a1608dd'),
+          pixelOffset: new Cartesian2(0, 24),
+          verticalOrigin: VerticalOrigin.TOP,
+          heightReference: HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      })
+
+      // Hazardous comparison route: the direct profile the planner
+      // rejected. Drawn dashed red so the compliant detour reads clearly
+      // against it, with its own danger pins along the way.
+      if (route.hazardous && route.hazardous.coordinates.length >= 3) {
+        viewer.entities.add({
+          id: 'astra-hazardous',
+          polyline: {
+            positions: Cartesian3.fromDegreesArray(
+              route.hazardous.coordinates.flatMap(([lon, lat]) => [lon, lat]),
+              MARS,
+            ),
+            width: 5,
+            material: new PolylineDashMaterialProperty({
+              color: Color.fromCssColorString('#ef4444'),
+              dashLength: 14,
+            }),
+            clampToGround: true,
+          },
+        })
+        const hazardousMid = sampleRoute(route.hazardous, 0.5)
+        const zoneCount = route.hazardous.dangers.length
+        viewer.entities.add({
+          id: 'astra-hazardous-label',
+          position: Cartesian3.fromDegrees(
+            hazardousMid.lon,
+            hazardousMid.lat,
+            0,
+            MARS,
+          ),
+          label: {
+            text: `Direct route · ${route.hazardous.distance_km.toFixed(1)} km · max ${route.hazardous.max_grade_deg.toFixed(1)}° · ${zoneCount} danger zone${zoneCount === 1 ? '' : 's'}`,
+            font: '12px sans-serif',
+            fillColor: Color.fromCssColorString('#fecaca'),
+            showBackground: true,
+            backgroundColor: Color.fromCssColorString('#450a0add'),
+            pixelOffset: new Cartesian2(0, 44),
+            verticalOrigin: VerticalOrigin.TOP,
+            heightReference: HeightReference.CLAMP_TO_GROUND,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        })
+      }
+
+      const dangerColor = (type: RouteDanger['type']): Color =>
+        type === 'cliff'
+          ? Color.fromCssColorString('#ef4444')
+          : type === 'rollover'
+            ? Color.fromCssColorString('#f97316')
+            : Color.fromCssColorString('#facc15')
+
+      const dangerPin = (id: string, zone: RouteDanger) =>
+        viewer.entities.add({
+          id,
+          position: Cartesian3.fromDegrees(zone.lon, zone.lat, 0, MARS),
+          point: {
+            pixelSize: zone.type === 'steep' ? 9 : 13,
+            color: dangerColor(zone.type),
+            outlineColor: Color.BLACK,
+            outlineWidth: 2,
+            heightReference: HeightReference.CLAMP_TO_GROUND,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+          label: {
+            text: `${zone.label} · km ${zone.distance_km.toFixed(1)}`,
+            font: '11px sans-serif',
+            fillColor: Color.WHITE,
+            showBackground: true,
+            backgroundColor: Color.fromCssColorString('#1c0a00cc'),
+            pixelOffset: new Cartesian2(0, -18),
+            verticalOrigin: VerticalOrigin.BOTTOM,
+            heightReference: HeightReference.CLAMP_TO_GROUND,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        })
+
+      // Danger pins on both traverses: the safe route shows what it avoids
+      // (usually nothing over the limit), the direct route shows why.
+      ;(route.dangers ?? []).forEach((zone, index) => {
+        dangerPin(`astra-danger-safe-${index}`, zone)
+      })
+      ;(route.hazardous?.dangers ?? []).forEach((zone, index) => {
+        dangerPin(`astra-danger-hazardous-${index}`, zone)
+      })
+
+      // Scrubbable preview marker: sits at the start until the user drags
+      // the traverse slider or plays the simulation.
+      viewer.entities.add({
+        id: 'astra-preview',
+        position: Cartesian3.fromDegrees(first[0], first[1], 0, MARS),
+        point: {
+          pixelSize: 9,
+          color: Color.fromCssColorString('#22d3ee'),
+          outlineColor: Color.BLACK,
+          outlineWidth: 2,
+          heightReference: HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+        label: {
+          text: 'Preview · 0.0 km',
+          font: '11px sans-serif',
+          fillColor: Color.WHITE,
+          showBackground: true,
+          backgroundColor: Color.fromCssColorString('#04222bcc'),
+          pixelOffset: new Cartesian2(0, -22),
+          verticalOrigin: VerticalOrigin.BOTTOM,
+          heightReference: HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      })
+
+      // Frame the whole traverse first: the traceroute preview starts from
+      // an overview, then the slider drags the camera along the route in 3D.
       const sphere = BoundingSphere.fromPoints(positions)
       await new Promise<void>((resolve) => {
         viewer.camera.flyToBoundingSphere(sphere, {
-          duration: 1.5,
+          duration: 1.6,
           offset: new HeadingPitchRange(
             0,
             -Math.PI / 3,
-            Math.max(sphere.radius * 2.2, 30_000),
+            Math.max(sphere.radius * 2.4, 30_000),
           ),
           complete: () => resolve(),
           cancel: () => resolve(),
@@ -171,25 +1765,77 @@ export default function CesiumMap() {
       })
     })
 
+    // React to the traverse preview scrubber and the simulation play button.
+    let subscribedPhase: RoutePhase = 'idle'
+    let subscribedPreviewT = 0
+    const unsubscribeStore = useAppStore.subscribe((state) => {
+      const route = state.route
+      if (!route || viewer.isDestroyed()) return
+      if (state.routePhase !== subscribedPhase) {
+        const previous = subscribedPhase
+        subscribedPhase = state.routePhase
+        if (state.routePhase === 'simulating') {
+          void startScout(route)
+          return
+        }
+        if (previous === 'simulating') {
+          // Simulation finished: leave the camera where it stopped, but
+          // bring the preview marker back at the scrubber position.
+          updatePreview(route, state.previewT, false)
+        }
+      }
+      if (
+        state.routePhase === 'preview' &&
+        state.previewT !== subscribedPreviewT
+      ) {
+        subscribedPreviewT = state.previewT
+        updatePreview(route, state.previewT, true)
+      }
+    })
+
     if (import.meta.env.DEV) {
-      ;(globalThis as unknown as Record<string, unknown>).__astraViewer = viewer
+      ;(globalThis as unknown as Record<string, unknown>).__astraViewer =
+        viewer
+      ;(globalThis as unknown as Record<string, unknown>).__astraProbe = (
+        lon: number,
+        lat: number,
+      ) => {
+        const cartographic =
+          viewer.scene.globe.ellipsoid.cartesianToCartographic(
+            Cartesian3.fromDegrees(lon, lat, 0, MARS),
+          )
+        return viewer.scene.globe.getHeight(cartographic) ?? null
+      }
     }
 
     return () => {
+      unsubscribeStore()
+      unsubscribeLayers()
       unregister()
       unregisterConditions()
       unregisterBriefing()
       unregisterRoute()
-      viewer.entities.removeById('astra-route')
-      viewer.entities.removeById('astra-route-start')
-      viewer.entities.removeById('astra-route-end')
+      clearRoute()
       viewer.entities.removeById('astra-landing')
+      viewer.entities.removeById('astra-rems-station')
+      for (const entity of siteEntities) {
+        viewer.entities.remove(entity)
+      }
       if (import.meta.env.DEV) {
         delete (globalThis as unknown as Record<string, unknown>).__astraViewer
+        delete (globalThis as unknown as Record<string, unknown>).__astraProbe
+        delete (globalThis as unknown as Record<string, unknown>).__astraScout
+        delete (globalThis as unknown as Record<string, unknown>).__astraChase
       }
       viewer.destroy()
     }
   }, [])
 
-  return <div ref={containerRef} className="h-full w-full" />
+  return (
+    <>
+      <div ref={containerRef} className="h-full w-full" />
+      <LayerPanel />
+      <DriveHud />
+    </>
+  )
 }

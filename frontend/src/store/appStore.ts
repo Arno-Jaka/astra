@@ -7,6 +7,33 @@ export const routePointSchema = z.object({
   grade_deg: z.number().nullable(),
 })
 
+export const dangerSchema = z.object({
+  type: z.enum(['steep', 'rollover', 'cliff']),
+  label: z.string(),
+  lon: z.number(),
+  lat: z.number(),
+  distance_km: z.number(),
+  span_km: z.number(),
+  max_grade_deg: z.number(),
+  over_limit: z.boolean(),
+})
+
+export type RouteDanger = z.infer<typeof dangerSchema>
+
+export const hazardousRouteSchema = z.object({
+  distance_km: z.number(),
+  ascent_m: z.number(),
+  descent_m: z.number(),
+  max_grade_deg: z.number(),
+  mean_grade_deg: z.number(),
+  coordinates: z.array(z.tuple([z.number(), z.number()])),
+  profile: z.array(routePointSchema),
+  dangers: z.array(dangerSchema),
+  note: z.string().optional(),
+})
+
+export type HazardousRouteData = z.infer<typeof hazardousRouteSchema>
+
 export const routeSchema = z.object({
   start: z.string(),
   end: z.string(),
@@ -25,6 +52,10 @@ export const routeSchema = z.object({
   pace_m_s: z.number(),
   eta_note: z.string().optional(),
   note: z.string().optional(),
+  hazard_count: z.number().optional(),
+  hazard_note: z.string().optional(),
+  dangers: z.array(dangerSchema).optional(),
+  hazardous: hazardousRouteSchema.nullable().optional(),
   resolution_note: z.string().optional(),
   source_url: z.string().optional(),
   retrieved_at: z.string().optional(),
@@ -96,11 +127,27 @@ export const briefingSchema = z.object({
 
 export type BriefingData = z.infer<typeof briefingSchema>
 
+/**
+ * Route lifecycle: idle (no route) → preview (scrubbable traverse preview)
+ * → simulating (chase-camera scout animation) → back to preview.
+ */
+export type RoutePhase = 'idle' | 'preview' | 'simulating'
+
+/** Which traverse the preview scrubber and scout simulation follow. */
+export type RouteChoice = 'safe' | 'hazardous'
+
 type AppState = {
   route: RouteData | null
+  routePhase: RoutePhase
+  routeChoice: RouteChoice
+  /** Fraction (0-1) of the route distance the preview scrubber sits at. */
+  previewT: number
   conditions: ConditionsData | null
   briefing: BriefingData | null
   setRoute: (route: RouteData | null) => void
+  setPreviewT: (t: number) => void
+  setRoutePhase: (phase: RoutePhase) => void
+  setRouteChoice: (choice: RouteChoice) => void
   setConditions: (conditions: ConditionsData | null) => void
   setBriefing: (briefing: BriefingData | null) => void
   clearSite: () => void
@@ -108,10 +155,29 @@ type AppState = {
 
 export const useAppStore = create<AppState>((set) => ({
   route: null,
+  routePhase: 'idle',
+  routeChoice: 'safe',
+  previewT: 0,
   conditions: null,
   briefing: null,
-  setRoute: (route) => set({ route }),
+  setRoute: (route) =>
+    set({
+      route,
+      routePhase: route ? 'preview' : 'idle',
+      routeChoice: 'safe',
+      previewT: 0,
+    }),
+  setPreviewT: (t) => set({ previewT: Math.min(1, Math.max(0, t)) }),
+  setRoutePhase: (routePhase) => set({ routePhase }),
+  setRouteChoice: (routeChoice) => set({ routeChoice, previewT: 0 }),
   setConditions: (conditions) => set({ conditions }),
   setBriefing: (briefing) => set({ briefing }),
-  clearSite: () => set({ route: null, conditions: null, briefing: null }),
+  clearSite: () =>
+    set({
+      route: null,
+      routePhase: 'idle',
+      previewT: 0,
+      conditions: null,
+      briefing: null,
+    }),
 }))

@@ -6,7 +6,7 @@ from agno.tools import tool
 
 from .channel import channel
 from .commands import CommandError
-from .dem import PACE_M_S
+from .dem import PACE_M_S, pixel_size_km
 from .dem import SOURCE_URL as MOLA_URL
 from .dem import plan as plan_dem_route
 from .gazetteer import resolve
@@ -42,8 +42,8 @@ async def fly_to_location(location: str) -> dict[str, Any]:
         "lon": site.lon,
         "lat": site.lat,
         "ack_status": ack.get("status"),
-        "mission": "Mars Trek",
-        "instrument": "Viking MDIM 2.1",
+        "mission": "Mars Global Surveyor",
+        "instrument": "MOLA color hillshade",
         "source_url": site.source_url,
         "imagery_url": IMAGERY_URL,
         "retrieved_at": datetime.now(UTC).isoformat(),
@@ -214,6 +214,26 @@ async def plan_route(
 
     stats = result["stats"]
     eta_hours = stats["distance_km"] * 1000.0 / PACE_M_S / 3600.0
+    hazards = result["dangers"]
+    hazardous = result["hazardous"]
+    hazard_count = sum(
+        1
+        for zone in hazards
+        if zone["type"] in ("rollover", "cliff") or zone["over_limit"]
+    )
+    hazard_note = (
+        f"{hazard_count} danger zone(s) on this route"
+        if hazard_count
+        else "no danger zones over the slope limit"
+    )
+    if hazardous is not None:
+        hazard_note += (
+            f"; for comparison, the direct route is "
+            f"{hazardous['distance_km']:.1f} km (vs "
+            f"{stats['distance_km']:.1f} km for the safe route) and crosses "
+            f"{len(hazardous['dangers'])} danger zone(s) at up to "
+            f"{hazardous['max_grade_deg']:.0f} deg"
+        )
     summary: dict[str, Any] = {
         "start": start_site.name,
         "end": end_site.name,
@@ -230,10 +250,14 @@ async def plan_route(
         "pace_m_s": PACE_M_S,
         "eta_note": "Simulated scout pace; not a rover drive plan.",
         "note": result["note"],
+        "hazard_count": hazard_count,
+        "hazard_note": hazard_note,
         "mission": "Mars Global Surveyor",
         "instrument": "MOLA",
         "source_url": MOLA_URL,
-        "resolution_note": "16 ppd MOLA (~3.7 km/px); regional estimate.",
+        "resolution_note": (
+            f"{pixel_size_km():.1f} km/px MOLA; grades are regional estimates."
+        ),
         "retrieved_at": datetime.now(UTC).isoformat(),
     }
 
@@ -244,6 +268,8 @@ async def plan_route(
                 **summary,
                 "coordinates": result["coordinates"],
                 "profile": result["profile"],
+                "dangers": hazards,
+                "hazardous": hazardous,
             },
         )
     except CommandError as exc:
