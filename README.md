@@ -57,12 +57,15 @@ profile. Replies are spoken with a neural voice.
   banner**, and when the live grade passes the mission slope envelope
   (max(12°, limit + 0.25°), matching the backend danger classification)
   the rover **rolls over — tumbling downhill with decaying bounces,
-  then wrecking and catching fire** (Cesium particle plumes), with the
-  chase camera staying on the wreck. The drive ends with a "scout lost"
+  then wrecking in a crackle of blue electrical sparks** (Cesium
+  particle plumes with staggered crackle bursts), with the chase camera
+  staying on the wreck. The drive ends with a "scout lost"
   report and recovers onto the safe route. This is a dramatization of
   why the planner avoids over-limit terrain, not a physical hazard
-  model — the grades come from ~2 km MOLA sampling (regional estimates)
-  and a real rover would not combust in Mars' thin atmosphere.
+  model — the grades come from ~2 km MOLA sampling (regional estimates),
+  and since combustion cannot happen in Mars' thin CO₂ atmosphere the
+  wreck is shown as electrical discharge from its power bus rather
+  than fire.
 - **Layers** — a layer panel toggles NASA base imagery (MOLA hillshade or
   Viking MDIM 2.1) and a **slope-hazard overlay** (green→red at
   5/10/15/25°) computed server-side from the MOLA DEM, plus the 21 gazetteer
@@ -151,7 +154,8 @@ Open `http://localhost:5173`. Vite proxies `/api` and `/ws` to port 8000.
    The HUD under the view shows live telemetry, and the elevation chart
    cursor follows the rover. **With "Direct" selected, play the traverse**:
    passing steep zones raises the amber slip-risk banner, and at the
-   rollover zone the rover flips, tumbles downhill, and burns — ending in
+   rollover zone the rover flips, tumbles downhill, and wrecks in a
+   crackle of blue electrical sparks — ending in
    a "scout lost" report that recovers onto the safe route. (On the safe
    route it completes without incident; a 15° Gale→Sharp request puts the
    rollover about 0.5 km in.)
@@ -202,8 +206,9 @@ computes measurements.
 - The crash simulation is a dramatization, not a hazard model: the
   rollover trigger is the mission slope envelope (max(12°, limit + 0.25°))
   computed from ~2 km-sampled MOLA grades, the tumble is a scripted
-  slide-and-roll, and the fire plume is a particle effect — a real rover
-  would not combust in Mars' thin CO₂ atmosphere.
+  slide-and-roll, and the electrical sparks are a particle effect —
+  combustion cannot happen in Mars' thin CO₂ atmosphere, so the wreck
+  is shown arcing electrically instead of burning.
 - Meter-scale landforms (rocks, ridges, potholes) are below MOLA's ~1.9 km
   resolution, so "bumps" come from kilometer-scale DEM undulation, not
   simulated obstacles; a HiRISE/CTX DTM overlay would be needed for true

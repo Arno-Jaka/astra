@@ -18,6 +18,7 @@ import {
   ModelAnimationLoop,
   NearFarScalar,
   ParticleSystem,
+  ParticleBurst,
   PerspectiveFrustum,
   PolylineDashMaterialProperty,
   PolylineGlowMaterialProperty,
@@ -157,10 +158,12 @@ const TILT_CLEARANCE_M = 1.0
  * the vehicle's certified stability envelope: the rover loses control
  * (rollover) when the live grade passes the envelope (max(12°, limit +
  * 0.25°), matching the backend danger classification) and falls on
- * cliff-like grades, then tumbles downhill, bounces, and catches fire.
- * Compliant routes stay at or below the requested limit, so the safe
- * route never crashes; the fire is a dramatization, not a physical
- * hazard model (MOLA grades are regional estimates).
+ * cliff-like grades, then tumbles downhill with decaying bounces and
+ * wrecks in blue electrical arcing — combustion is impossible in Mars'
+ * thin CO₂ atmosphere, so the power bus discharge is the plausible
+ * failure effect. Compliant routes stay at or below the requested limit,
+ * so the safe route never crashes; the sparks are a dramatization, not a
+ * physical hazard model (MOLA grades are regional estimates).
  */
 const CRASH = {
   minRolloverGradeDeg: 12,
@@ -173,22 +176,36 @@ const CRASH = {
   tumbleMs: 2600,
   /** Bounce height of the first touchdown (metres, decaying per bounce). */
   firstBounceM: 0.9,
-  fireEmissionPerS: 34,
-  smokeEmissionPerS: 14,
-  /** How long the burning wreck is held before the drive ends (ms). */
+  /** Electrical spark emission rate at the wreck (particles/s). */
+  sparkEmissionPerS: 110,
+  /** Soft blue glow emission rate at the wreck (particles/s). */
+  glowEmissionPerS: 22,
+  /** Extra particles thrown by each crackle burst. */
+  sparkBurstMin: 12,
+  sparkBurstMax: 26,
+  /** How long the arcing wreck is held before the drive ends (ms). */
   holdAfterCrashMs: 4200,
 } as const
 
-/** Soft radial-gradient particle texture for the fire and smoke plumes. */
+/**
+ * Staggered crackle-burst times (seconds after the wreck settles), spacing
+ * out so the arcing fades over the hold instead of popping uniformly.
+ */
+const SPARK_CRACKLE_S = [
+  0.6, 1.4, 2.2, 3.1, 4.0, 5.2, 6.5, 8.0, 10, 13, 17, 22, 28, 35, 45, 58,
+] as const
+
+/** Bright-core radial-gradient particle texture for the electrical sparks. */
 function makeParticleTexture(): HTMLCanvasElement {
   const canvas = document.createElement('canvas')
   canvas.width = 64
   canvas.height = 64
   const context = canvas.getContext('2d')
   if (context) {
-    const gradient = context.createRadialGradient(32, 32, 2, 32, 32, 30)
+    const gradient = context.createRadialGradient(32, 32, 1, 32, 32, 30)
     gradient.addColorStop(0, 'rgba(255,255,255,1.0)')
-    gradient.addColorStop(0.4, 'rgba(255,255,255,0.55)')
+    gradient.addColorStop(0.25, 'rgba(255,255,255,0.85)')
+    gradient.addColorStop(0.6, 'rgba(255,255,255,0.25)')
     gradient.addColorStop(1, 'rgba(255,255,255,0.0)')
     context.fillStyle = gradient
     context.fillRect(0, 0, 64, 64)
@@ -462,7 +479,7 @@ export default function CesiumMap() {
     let chaseActive = false
     let chaseHandler: ScreenSpaceEventHandler | null = null
     let chaseKeydown: ((event: KeyboardEvent) => void) | null = null
-    /** Fire/smoke particle systems at a crash wreck. */
+    /** Electrical-spark particle systems at a crash wreck. */
     let crashParticles: ParticleSystem[] = []
     let particleTexture: HTMLCanvasElement | null = null
 
@@ -498,7 +515,7 @@ export default function CesiumMap() {
       }
     }
 
-    /** Remove the burning-wreck particle systems, if any. */
+    /** Remove the wreck's electrical-spark particle systems, if any. */
     const removeCrashEffects = () => {
       for (const system of crashParticles) {
         viewer.scene.primitives.remove(system)
@@ -507,55 +524,68 @@ export default function CesiumMap() {
     }
 
     /**
-     * Spawn the crash fire and smoke plumes at a wreck position. The plumes
-     * are a scout-simulation dramatization (a rover would not actually
-     * combust in the thin Martian atmosphere), not a physical model.
+     * Spawn the wreck's electrical arcing at a crash position: fast
+     * blue-white sparks with staggered crackle bursts, plus a soft blue
+     * discharge glow. Combustion cannot happen in Mars' thin CO₂
+     * atmosphere, so the rover failure is shown as electrical discharge
+     * from the wrecked power bus — still a scout-simulation
+     * dramatization, not a physical model.
      */
-    const spawnFire = (position: Cartesian3) => {
+    const spawnSparks = (position: Cartesian3) => {
       particleTexture ??= makeParticleTexture()
       const frame = Transforms.eastNorthUpToFixedFrame(position, MARS)
-      const fire = new ParticleSystem({
+      // Bright, fast, short-lived sparks — the arc itself.
+      const sparks = new ParticleSystem({
         modelMatrix: Matrix4.clone(frame),
-        emitter: new ConeEmitter(CesiumMath.toRadians(14)),
-        emissionRate: CRASH.fireEmissionPerS,
-        minimumParticleLife: 0.7,
-        maximumParticleLife: 1.5,
-        minimumSpeed: 2.0,
-        maximumSpeed: 4.5,
-        startScale: 0.7,
-        endScale: 2.4,
+        emitter: new ConeEmitter(CesiumMath.toRadians(26)),
+        emissionRate: CRASH.sparkEmissionPerS,
+        bursts: SPARK_CRACKLE_S.map(
+          (time) =>
+            new ParticleBurst({
+              time,
+              minimum: CRASH.sparkBurstMin,
+              maximum: CRASH.sparkBurstMax,
+            }),
+        ),
+        minimumParticleLife: 0.08,
+        maximumParticleLife: 0.32,
+        minimumSpeed: 5,
+        maximumSpeed: 13,
+        startScale: 0.5,
+        endScale: 1.2,
+        imageSize: new Cartesian2(0.5, 0.5),
+        sizeInMeters: true,
+        image: particleTexture,
+        startColor: Color.fromCssColorString('#e0f2fe').withAlpha(1.0),
+        endColor: Color.fromCssColorString('#2563eb').withAlpha(0.0),
+        lifetime: 60,
+      })
+      viewer.scene.primitives.add(sparks)
+      crashParticles.push(sparks)
+      // Soft blue glow lingering over the wreck — discharge haze.
+      const glow = new ParticleSystem({
+        modelMatrix: Matrix4.multiplyByTranslation(
+          frame,
+          new Cartesian3(0, 0, 0.6),
+          new Matrix4(),
+        ),
+        emitter: new ConeEmitter(CesiumMath.toRadians(18)),
+        emissionRate: CRASH.glowEmissionPerS,
+        minimumParticleLife: 0.5,
+        maximumParticleLife: 1.2,
+        minimumSpeed: 0.3,
+        maximumSpeed: 1.4,
+        startScale: 1.0,
+        endScale: 3.6,
         imageSize: new Cartesian2(1.6, 1.6),
         sizeInMeters: true,
         image: particleTexture,
-        startColor: Color.fromCssColorString('#ffd166').withAlpha(0.95),
-        endColor: Color.fromCssColorString('#ef4444').withAlpha(0.0),
+        startColor: Color.fromCssColorString('#60a5fa').withAlpha(0.5),
+        endColor: Color.fromCssColorString('#1e3a8a').withAlpha(0.0),
         lifetime: 60,
       })
-      viewer.scene.primitives.add(fire)
-      crashParticles.push(fire)
-      const smoke = new ParticleSystem({
-        modelMatrix: Matrix4.multiplyByTranslation(
-          frame,
-          new Cartesian3(0, 0, 1.2),
-          new Matrix4(),
-        ),
-        emitter: new ConeEmitter(CesiumMath.toRadians(22)),
-        emissionRate: CRASH.smokeEmissionPerS,
-        minimumParticleLife: 2.5,
-        maximumParticleLife: 4.5,
-        minimumSpeed: 0.8,
-        maximumSpeed: 1.8,
-        startScale: 1.0,
-        endScale: 5.5,
-        imageSize: new Cartesian2(2.4, 2.4),
-        sizeInMeters: true,
-        image: particleTexture,
-        startColor: Color.fromCssColorString('#6b7280').withAlpha(0.5),
-        endColor: Color.fromCssColorString('#111827').withAlpha(0.0),
-        lifetime: 60,
-      })
-      viewer.scene.primitives.add(smoke)
-      crashParticles.push(smoke)
+      viewer.scene.primitives.add(glow)
+      crashParticles.push(glow)
     }
 
     const terrainHeightAt = (lon: number, lat: number): number | undefined =>
@@ -1215,9 +1245,10 @@ export default function CesiumMap() {
       // The rover loses control when the live grade passes the mission
       // slope envelope (max(12°, limit + 0.25°), matching the backend
       // danger classification) and falls on cliff-like drops; it then
-      // tumbles downhill with decaying bounces and catches fire. Thresholds
-      // are calibrated to real MOLA grades (the steepest Mars terrain
-      // reaches ~25° at MOLA resolution); the fire is a dramatization.
+      // tumbles downhill with decaying bounces and arcs electrically.
+      // Thresholds are calibrated to real MOLA grades (the steepest Mars
+      // terrain reaches ~25° at MOLA resolution); the sparks are a
+      // dramatization.
       const rolloverGradeDeg = Math.max(
         CRASH.minRolloverGradeDeg,
         route.slope_limit_deg + CRASH.gradeOverLimitDeg,
@@ -1231,7 +1262,7 @@ export default function CesiumMap() {
         slideM: number
         roll: number
         elapsedS: number
-        burned: boolean
+        arcing: boolean
       }
       let crash: CrashState | null = null
 
@@ -1239,7 +1270,7 @@ export default function CesiumMap() {
         const absGrade = Math.abs(sample.gradeDeg)
         const detail =
           type === 'fall'
-            ? `Fell at km ${sample.distanceKm.toFixed(1)} — ${absGrade.toFixed(0)}° cliff drop; impact and fire.`
+            ? `Fell at km ${sample.distanceKm.toFixed(1)} — ${absGrade.toFixed(0)}° cliff drop; impact and electrical discharge.`
             : `Rollover at km ${sample.distanceKm.toFixed(1)} — ${absGrade.toFixed(0)}° grade exceeded the mission slope envelope.`
         crash = {
           type,
@@ -1249,7 +1280,7 @@ export default function CesiumMap() {
           slideM: 0,
           roll: 0,
           elapsedS: 0,
-          burned: false,
+          arcing: false,
         }
         const store = useDriveStore.getState()
         store.update({ paused: false })
@@ -1322,15 +1353,15 @@ export default function CesiumMap() {
         }
 
         if (
-          !state.burned &&
+          !state.arcing &&
           state.elapsedS * 1000 >= CRASH.tumbleMs
         ) {
-          state.burned = true
-          spawnFire(position)
+          state.arcing = true
+          spawnSparks(position)
           useDriveStore.getState().update({ distanceKm: sample.distanceKm })
         }
         if (
-          state.burned &&
+          state.arcing &&
           state.elapsedS * 1000 >= CRASH.tumbleMs + CRASH.holdAfterCrashMs
         ) {
           endDrive()

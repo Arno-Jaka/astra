@@ -25,7 +25,7 @@ PACE_M_S = 1.0
 # slope envelope (the requested limit plus a small margin, floored at 12
 # deg) exceed the vehicle's certified stability envelope, so the scout
 # simulation loses control there (rollover); 35 deg is cliff-like (fall and
-# impact/fire in the scout simulation). The floor keeps very low mission
+# impact in the scout simulation). The floor keeps very low mission
 # limits from triggering rollovers on gentle terrain, and the margin keeps
 # compliant routes (max grade <= limit + 0.05) always below the envelope.
 DANGER_STEEP_DEG = 10.0
@@ -432,7 +432,7 @@ def _danger_label(
     if peak_deg >= DANGER_CLIFF_DEG:
         return (
             "cliff",
-            f"Cliff ({peak_deg:.0f}° drop) — fall and impact/fire risk",
+            f"Cliff ({peak_deg:.0f}° drop) — fall and impact risk",
         )
     if peak_deg >= danger_envelope_deg(slope_limit_deg):
         return (
