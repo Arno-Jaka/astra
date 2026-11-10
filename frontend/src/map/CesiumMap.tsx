@@ -1,49 +1,26 @@
 import { useEffect, useRef } from 'react'
 import {
+  BoundingSphere,
+  Cartesian2,
   Cartesian3,
-  Credit,
-  Ellipsoid,
+  Color,
   EllipsoidTerrainProvider,
-  GeographicTilingScheme,
   Globe,
-  Rectangle,
+  HeadingPitchRange,
+  VerticalOrigin,
   Viewer,
-  WebMapTileServiceImageryProvider,
 } from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
+import {
+  briefingSchema,
+  conditionsSchema,
+  routeSchema,
+  useAppStore,
+} from '../store/appStore'
 import { onCommand } from '../ws/commandChannel'
+import { MARS, VIKING, createTrekProvider } from './trek'
 
-const MARS = Ellipsoid.MARS
-
-const TREK_BASE = 'https://trek.nasa.gov/tiles/Mars/EQ'
-
-type TrekLayer = {
-  id: string
-  label: string
-  maximumLevel: number
-  credit: string
-}
-
-const VIKING: TrekLayer = {
-  id: 'Mars_Viking_MDIM21_ClrMosaic_global_232m',
-  label: 'Viking MDIM 2.1',
-  maximumLevel: 7,
-  credit: 'NASA/JPL/Mars Trek — Viking',
-}
-
-export function createTrekProvider(layer: TrekLayer): WebMapTileServiceImageryProvider {
-  return new WebMapTileServiceImageryProvider({
-    url: `${TREK_BASE}/${layer.id}/1.0.0/default/default028mm/{TileMatrix}/{TileRow}/{TileCol}.jpg`,
-    layer: layer.id,
-    style: 'default',
-    format: 'image/jpeg',
-    tileMatrixSetID: 'default028mm',
-    maximumLevel: layer.maximumLevel,
-    tilingScheme: new GeographicTilingScheme({ ellipsoid: MARS }),
-    rectangle: Rectangle.fromDegrees(-180, -90, 180, 90),
-    credit: new Credit(layer.credit),
-  })
-}
+const ROUTE_HEIGHT = 2500
 
 export default function CesiumMap() {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -85,10 +62,109 @@ export default function CesiumMap() {
       if (![lon, lat, height, duration].every(Number.isFinite)) {
         throw new Error('fly_to requires numeric lon/lat')
       }
+      useAppStore.getState().clearSite()
+      viewer.entities.removeById('astra-landing')
       await new Promise<void>((resolve) => {
         viewer.camera.flyTo({
           destination: Cartesian3.fromDegrees(lon, lat, height, MARS),
           duration,
+          complete: () => resolve(),
+          cancel: () => resolve(),
+        })
+      })
+    })
+
+    const unregisterConditions = onCommand('show_conditions', (payload) => {
+      useAppStore.getState().setConditions(conditionsSchema.parse(payload))
+    })
+
+    const unregisterBriefing = onCommand('show_briefing', (payload) => {
+      const briefing = briefingSchema.parse(payload)
+      useAppStore.getState().setBriefing(briefing)
+      viewer.entities.removeById('astra-landing')
+      if (!briefing.landing) return
+      viewer.entities.add({
+        id: 'astra-landing',
+        position: Cartesian3.fromDegrees(
+          briefing.landing.lon,
+          briefing.landing.lat,
+          ROUTE_HEIGHT,
+          MARS,
+        ),
+        point: {
+          pixelSize: 9,
+          color: Color.CYAN,
+          outlineColor: Color.BLACK,
+          outlineWidth: 2,
+        },
+        label: {
+          text: briefing.landing.name,
+          font: '12px sans-serif',
+          fillColor: Color.WHITE,
+          showBackground: true,
+          backgroundColor: Color.fromCssColorString('#000000aa'),
+          pixelOffset: new Cartesian2(0, -18),
+          verticalOrigin: VerticalOrigin.BOTTOM,
+        },
+      })
+    })
+
+    const unregisterRoute = onCommand('show_route', async (payload) => {
+      const route = routeSchema.parse(payload)
+      if (route.coordinates.length < 3) {
+        throw new Error('show_route requires at least 3 points')
+      }
+      useAppStore.getState().setRoute(route)
+      const flat = route.coordinates.flatMap(([lon, lat]) => [
+        lon,
+        lat,
+        ROUTE_HEIGHT,
+      ])
+
+      const positions = Cartesian3.fromDegreesArrayHeights(flat, MARS)
+      viewer.entities.removeById('astra-route')
+      viewer.entities.removeById('astra-route-start')
+      viewer.entities.removeById('astra-route-end')
+
+      viewer.entities.add({
+        id: 'astra-route',
+        polyline: {
+          positions,
+          width: 6,
+          material: Color.fromCssColorString('#ff8a3d'),
+          clampToGround: false,
+        },
+      })
+      viewer.entities.add({
+        id: 'astra-route-start',
+        position: positions[0],
+        point: {
+          pixelSize: 10,
+          color: Color.LIME,
+          outlineColor: Color.BLACK,
+          outlineWidth: 2,
+        },
+      })
+      viewer.entities.add({
+        id: 'astra-route-end',
+        position: positions[positions.length - 1],
+        point: {
+          pixelSize: 10,
+          color: Color.ORANGE,
+          outlineColor: Color.BLACK,
+          outlineWidth: 2,
+        },
+      })
+
+      const sphere = BoundingSphere.fromPoints(positions)
+      await new Promise<void>((resolve) => {
+        viewer.camera.flyToBoundingSphere(sphere, {
+          duration: 1.5,
+          offset: new HeadingPitchRange(
+            0,
+            -Math.PI / 3,
+            Math.max(sphere.radius * 2.2, 30_000),
+          ),
           complete: () => resolve(),
           cancel: () => resolve(),
         })
@@ -101,6 +177,13 @@ export default function CesiumMap() {
 
     return () => {
       unregister()
+      unregisterConditions()
+      unregisterBriefing()
+      unregisterRoute()
+      viewer.entities.removeById('astra-route')
+      viewer.entities.removeById('astra-route-start')
+      viewer.entities.removeById('astra-route-end')
+      viewer.entities.removeById('astra-landing')
       if (import.meta.env.DEV) {
         delete (globalThis as unknown as Record<string, unknown>).__astraViewer
       }

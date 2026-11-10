@@ -1,10 +1,12 @@
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from .agent import build_agent
 from .channel import channel
 from .commands import CommandError
+from .tts import TTSRequest, synthesize
 
 app = FastAPI(title="ASTRA", version="0.1.0")
 
@@ -68,3 +70,8 @@ async def agent_chat(req: ChatRequest) -> dict[str, object]:
         for t in (output.tools or [])
     ]
     return {"content": output.content, "tools": tools}
+
+
+@app.post("/tts")
+async def tts(req: TTSRequest) -> FileResponse:
+    return await synthesize(req)

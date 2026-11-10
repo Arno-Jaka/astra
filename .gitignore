@@ -21,6 +21,9 @@ dist/
 data/dem/*.tif
 data/dem/*.tiff
 data/dem/*.vrt
+data/dem/*.img
+data/dem/*.lbl
+backend/data/dem/
 data/tiles/
 data/cache/
 
