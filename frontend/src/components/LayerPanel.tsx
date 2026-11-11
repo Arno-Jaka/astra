@@ -1,4 +1,5 @@
 import { useLayerStore, type BaseLayerId } from '../store/layerStore'
+import FloatingPanel from './FloatingPanel'
 
 const BASES: { id: BaseLayerId; label: string; note: string }[] = [
   {
@@ -20,14 +21,21 @@ const SLOPE_SWATCHES = [
   { color: 'rgba(239, 68, 68, 0.7)', label: '>25°' },
 ]
 
-export default function LayerPanel() {
+export default function LayerPanel({ terrainStatus, onRetryTerrain }: {
+  terrainStatus: 'loading' | 'ready' | 'fallback'; onRetryTerrain: () => void
+}) {
   const base = useLayerStore((state) => state.base)
   const setBase = useLayerStore((state) => state.setBase)
   const slope = useLayerStore((state) => state.slope)
   const toggleSlope = useLayerStore((state) => state.toggleSlope)
 
   return (
-    <aside className="pointer-events-auto absolute right-4 top-16 z-20 w-56 rounded-xl border border-white/10 bg-black/65 p-3 shadow-2xl backdrop-blur-xl">
+    <FloatingPanel id="layers" title="Map layers" width={260} initial={{ right: 16, top: 16 }}>
+    <aside className="p-3">
+      {terrainStatus !== 'ready' ? <div role="status" className="mb-3 rounded border border-amber-300/30 bg-amber-400/10 p-2 text-xs text-amber-200">
+        {terrainStatus === 'loading' ? 'Loading NASA elevation terrain…' : 'Elevation service unavailable. Showing an imagery-only Mars globe.'}
+        {terrainStatus === 'fallback' ? <button type="button" className="mt-2 block rounded border border-amber-300/40 px-2 py-1" onClick={onRetryTerrain}>Retry terrain</button> : null}
+      </div> : null}
       <p className="text-[10px] uppercase tracking-[0.22em] text-orange-300/80">
         Layers
       </p>
@@ -95,5 +103,6 @@ export default function LayerPanel() {
         Imagery: NASA/JPL/USGS Mars Trek · NASA-only sources.
       </p>
     </aside>
+    </FloatingPanel>
   )
 }

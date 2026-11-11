@@ -11,7 +11,9 @@ profile. Replies are spoken with a neural voice.
 
 - **Mars globe** — CesiumJS with NASA Mars Trek imagery and heightmap
   terrain sampled from the MOLA DEM (32 ppd, ~1.9 km/px when present, else
-  16 ppd); fly-to 21 marked sites from Gale Crater to Olympus Mons.
+  16 ppd); fly-to 21 marked sites from Gale Crater to Olympus Mons. The
+  imagery-only globe renders while terrain loads; if the elevation service
+  is unavailable, the layer panel explains the fallback and offers Retry.
 - **Live conditions** — Curiosity REMS sol summary with provenance. At Jezero
   the UI labels the Gale station as the nearest live station (3,767 km away).
 - **Survival briefing** — curated mission briefing, hazards, science targets,
@@ -38,8 +40,8 @@ profile. Replies are spoken with a neural voice.
 - **Scout simulation, game-style camera** — "Play traverse" launches a
   GTA-style third-person chase: an animated Perseverance model drives the
   selected traverse clamped to the terrain, tilting onto the local MOLA
-  slope with spring suspension (airtime over crests, wheel squish in dips,
-  pitch kick from vertical acceleration). Before the drive starts, the whole
+  slope with a suspension pitch response and a ground-constrained wheel
+  envelope. Before the drive starts, the whole
   route corridor is pre-sampled against the rendered terrain tiles, so the
   rover keeps a mesh-consistent ground reference (and warms the DEM tile
   cache) even where 0.5 km route-profile interpolation would sink below the
@@ -57,8 +59,9 @@ profile. Replies are spoken with a neural voice.
   banner**, and when the live grade passes the mission slope envelope
   (max(12°, limit + 0.25°), matching the backend danger classification)
   the rover **rolls over — tumbling downhill with decaying bounces,
-  then wrecking in a crackle of blue electrical sparks** (Cesium
-  particle plumes with staggered crackle bursts), with the chase camera
+  then wrecking in blue electrical arcing** — jagged lightning-like
+  bolts flickering over the wreck, with point-like spark spatter
+  falling under Mars gravity — with the chase camera
   staying on the wreck. The drive ends with a "scout lost"
   report and recovers onto the safe route. This is a dramatization of
   why the planner avoids over-limit terrain, not a physical hazard
@@ -78,10 +81,80 @@ profile. Replies are spoken with a neural voice.
 - **Command/ack channel** — UI map actions are only reported as done after the
   frontend acknowledges the WebSocket command.
 
+## Autonomous rover simulation
+
+The scout defaults to **Fast traverse**, compressing a flat route into roughly
+90 seconds at 1× playback (longer on slopes and bends). The HUD shows the actual
+time-compression factor. Switch to **Real-time** for a simulated 1 m/s maximum
+with acceleration and braking. Playback speed scales either mode by 0.25–4×.
+Use the route scrubber before starting to explore any section of a long traverse.
+The HUD provides Pause/Resume, playback speed, Stop, and physical speed in m/s;
+Stop also cancels preparation before the rover has loaded.
+
+Pause and Stop now brake to a standstill (up to 2.5 seconds from full nominal
+speed); Resume accelerates smoothly. These transitions use presentation time,
+so fast-traverse compression does not turn braking into an instant freeze.
+The HUD distinguishes braking from fully paused. During a drive, world-anchored
+illustrative surface mottling and two terrain-clamped wheel trails make forward
+motion visible against the soft basemap. Trails retain up to 200 m and fade away
+within 18 seconds; wheel dust follows motion and settles under Mars gravity;
+these visual cues are simulated, not additional NASA observations.
+
+The rover stays at a fixed model scale. A dense contact envelope uses the shipped
+GLB's wheel bounds (including the outer treads), with correction after body tilt
+and again before rendering. Wheels follow the ground directly; suspension affects
+body attitude. Cached terrain heightmaps provide triangulated heights while
+Cesium's asynchronous mesh picker is unavailable. Failed tile requests retain
+parent terrain instead of generating zero-height cliffs. The chase camera uses
+the same ground fallback with its own smoothing and clearance. Its aim point and
+heading are isolated from body suspension; terrain-clearance adjustments move
+the eye and aim together to avoid pitching the view on every bump.
+
+Close-up terrain adds deterministic, band-limited ridges and shallow potholes
+to the heightmap itself. These are **simulated small-scale relief**, not NASA
+measurements. Both mesh rendering and contact sampling see that same surface.
+Regional MOLA heights, route planning, and route statistics retain their NASA
+data basis. This is a conservative body-contact envelope, not a full articulated
+rocker-bogie or tire/soil dynamics solver; basemap imagery remains low resolution.
+
+Verification: `cd frontend && node scripts/verify-rover-contact.mjs`.
+Motion checks: `cd frontend && node scripts/verify-drive-motion.mjs`.
+Crash checks: `cd frontend && node scripts/verify-crash-physics.mjs`.
+
+### Crew display and failure training
+
+- All HUD panels have a drag handle (mouse or touch) and animate to the nearest
+  screen edge on release. Arrow keys move a focused handle; Enter docks it and
+  Home resets it. Positions persist for the browser session; panels collapse.
+- The larger driving HUD includes a separate draggable, forward-facing rover
+  camera window, rendered at 10 fps using the NASA basemap and shared terrain.
+- Larger location labels use screen-space collision avoidance. Hazard labels
+  take priority and display severity, peak grade, and route distance.
+- The chase camera smooths its **relative** height above terrain, bounds heading
+  lag, and follows uphill baselines without a delayed overhead swing.
+- Arrival slows before the endpoint. The model's rig clip plays once; its mast
+  scan plays while stationary and freezes during travel or failure. Manipulator
+  clips remain stowed. The supplied GLB has no wheel-spin animation.
+- Falls use a fixed-step, along-route rigid-body approximation with 3.71 m/s²
+  gravity, hull contact, friction, support-edge torque and inelastic impacts.
+  Uphill failures tip backward; downhill failures tip forward. The hull rotates
+  about its centre and may travel beyond route endpoints. This remains an
+  illustrative vehicle model, not a validated rover stability/soil solver.
+- **CO₂ jet training is opt-in**, via the HUD's hazard-training section. NASA
+  MRO/HiRISE [PIA22587](https://images.nasa.gov/details/PIA22587) documents seasonal
+  south-polar CO₂ jets. No jets are claimed on the Gale/Mount Sharp route. The
+  drill's 7.5 m/s launch impulse is hypothetical; subsequent flight and impacts
+  use the same Mars-gravity solver. It does not alter NASA route hazard data.
+
+These simulation aids support the challenge's mission-planning objective;
+measured imagery/topography/weather, curated interpretation, and hypothetical
+failure training remain explicitly distinguished.
+
 ## Stack
 
 - `backend/` — FastAPI (Python 3.11, uv), Agno + Groq commander, deterministic
   DEM/route/slope-tile services, REMS client, edge-tts.
+  `app/map_api.py` registers the terrain, slope, site, and weather map endpoints.
 - `frontend/` — Vite + React + TypeScript, CesiumJS, Zod, Zustand, Tailwind.
 
 ## Run (dev)
@@ -154,8 +227,8 @@ Open `http://localhost:5173`. Vite proxies `/api` and `/ws` to port 8000.
    The HUD under the view shows live telemetry, and the elevation chart
    cursor follows the rover. **With "Direct" selected, play the traverse**:
    passing steep zones raises the amber slip-risk banner, and at the
-   rollover zone the rover flips, tumbles downhill, and wrecks in a
-   crackle of blue electrical sparks — ending in
+   rollover zone the rover flips, tumbles downhill, and wrecks in
+   flickering blue electrical arcs — ending in
    a "scout lost" report that recovers onto the safe route. (On the safe
    route it completes without incident; a 15° Gale→Sharp request puts the
    rollover about 0.5 km in.)
@@ -189,8 +262,9 @@ computes measurements.
 
 - MOLA is ~1.9 km/pixel (32 ppd), so route grades and the rover's terrain
   tilt are regional estimates, not trafficability. Meter-scale landforms
-  (rocks, ridges, potholes) are below MOLA resolution and are not modeled;
-  they would need a HiRISE/CTX DTM overlay. ETA assumes a 1 m/s scout and is
+  (rocks, ridges, potholes) are below MOLA resolution and are not measured;
+   measured obstacles would need a HiRISE/CTX DTM overlay. Close-up relief is
+   explicitly simulated. ETA assumes a 1 m/s scout and is
   simulated.
 - The MOLA color hillshade basemap is 463 m/pixel (max level 7), so close
   chase-camera views are soft. Mars Trek has no global higher-resolution
@@ -205,14 +279,12 @@ computes measurements.
   orbit control is mouse-only (no touch support).
 - The crash simulation is a dramatization, not a hazard model: the
   rollover trigger is the mission slope envelope (max(12°, limit + 0.25°))
-  computed from ~2 km-sampled MOLA grades, the tumble is a scripted
-  slide-and-roll, and the electrical sparks are a particle effect —
+  computed from ~2 km-sampled MOLA grades, the tumble uses an approximate
+  along-route rigid-body solver, and the electrical sparks are a particle effect —
   combustion cannot happen in Mars' thin CO₂ atmosphere, so the wreck
   is shown arcing electrically instead of burning.
-- Meter-scale landforms (rocks, ridges, potholes) are below MOLA's ~1.9 km
-  resolution, so "bumps" come from kilometer-scale DEM undulation, not
-  simulated obstacles; a HiRISE/CTX DTM overlay would be needed for true
-  meter-scale terrain.
+- Meter-scale ridges and potholes in the close-up simulation are synthetic;
+  a HiRISE/CTX DTM overlay would be needed for measured meter-scale terrain.
 
 ## Checks
 

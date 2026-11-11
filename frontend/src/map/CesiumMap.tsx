@@ -1,13 +1,13 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   BoundingSphere,
   Cartesian2,
   Cartesian3,
   Cartographic,
   Color,
-  ConeEmitter,
   ConstantPositionProperty,
   ConstantProperty,
+  EllipsoidTerrainProvider,
   Globe,
   HeadingPitchRange,
   HeightReference,
@@ -22,6 +22,7 @@ import {
   PerspectiveFrustum,
   PolylineDashMaterialProperty,
   PolylineGlowMaterialProperty,
+  SphereEmitter,
   sampleTerrain,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
@@ -30,12 +31,15 @@ import {
   Viewer,
 } from 'cesium'
 import type {
+  Entity,
   ImageryLayer,
   ImageryProvider,
+  Particle,
   TerrainProvider,
 } from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import DriveHud from '../components/DriveHud'
+import RoverCameraWindow, { type RoverViewPose } from '../components/RoverCameraWindow'
 import LayerPanel from '../components/LayerPanel'
 import {
   briefingSchema,
@@ -57,16 +61,22 @@ import {
   type TraversableRoute,
 } from './routePath'
 import { createSlopeOverlayProvider } from './slopeLayer'
+import { contactLift } from './roverContact'
+import { advanceDrive, arrivalSpeedLimit } from './driveMotion'
+import { advanceCrash, bodySupport, terrainSupport, type CrashBody } from './crashPhysics'
+import { createDriveSurface } from './driveSurface'
+import { declutterLabels } from './labelLayout'
+import { createWheelDust } from './wheelDust'
 import { createMolaTerrainProvider } from './terrain'
 import { MARS, MOLA_SHADE, VIKING, createTrekProvider } from './trek'
 
 const ROVER_URL = '/models/perseverance.glb'
 /** Lift the rover origin (wheel plane) this far above the sampled ground. */
-const ROVER_GROUND_CLEARANCE = 0.15
+const ROVER_GROUND_CLEARANCE = 0.03
 /** Cap the terrain-tilt of the rover so LOD seams never flip it on its side. */
 const ROVER_MAX_TILT_RAD = CesiumMath.toRadians(32)
 /** Half-spacing of the terrain probes used for the local surface normal. */
-const TERRAIN_SAMPLE_M = 18
+const TERRAIN_SAMPLE_M = 1.5
 /** Degrees of latitude per metre on Mars ((pi/180) * 3_396_190 m). */
 const METERS_PER_DEG = 59_238
 
@@ -77,7 +87,7 @@ const METERS_PER_DEG = 59_238
  */
 const ORBIT = {
   defaultPitch: 0.2,
-  defaultDistance: 7.5,
+  defaultDistance: 10.5,
   minDistance: 3.5,
   maxDistance: 20,
   /** Never dip below horizontal: low angles clip into terrain on slopes. */
@@ -92,15 +102,13 @@ const ORBIT = {
 } as const
 
 /**
- * Suspension: the body follows the terrain through a spring, so crests and
- * dips read as physical bumps (limited airtime, limited wheel squish) and
- * feed a smoothed pitch kick. The camera deliberately does NOT ride the
+ * Suspension feeds a smoothed body-pitch response. Wheel clearance is
+ * constrained separately against the terrain envelope, with no airtime or
+ * downward wheel squish. The camera deliberately does NOT ride the
  * suspension — it keeps the rover centered on its own smoothed height.
  */
 const SUSPENSION = {
   springPerS: 6,
-  maxAirM: 0.35,
-  maxSquishM: 0.12,
   tiltGain: 0.0025,
   maxTiltRad: 0.08,
   /** How fast the pitch kick reacts (smoothing keeps LOD spikes invisible). */
@@ -114,9 +122,11 @@ const SUSPENSION = {
  * ahead along the heading so the view shows the terrain being driven into.
  */
 const CHASE = {
-  heightSpringPerS: 5,
+  heightSpringPerS: 2.5,
+  cameraHeadingPerS: 3,
+  eyeHeightPerS: 4,
   aimUpM: 1.15,
-  aimLeadM: 2.5,
+  aimLeadM: 0.6,
   /** Heading/normal smoothing rates (per second, frame-rate independent). */
   headingPerS: 10,
   normalPerS: 16,
@@ -155,7 +165,7 @@ const TILT_CLEARANCE_M = 1.0
 
 /**
  * Crash simulation on a hazardous traverse. The mission slope limit acts as
- * the vehicle's certified stability envelope: the rover loses control
+ * an illustrative stability envelope: the rover loses control
  * (rollover) when the live grade passes the envelope (max(12°, limit +
  * 0.25°), matching the backend danger classification) and falls on
  * cliff-like grades, then tumbles downhill with decaying bounces and
@@ -169,22 +179,33 @@ const CRASH = {
   minRolloverGradeDeg: 12,
   gradeOverLimitDeg: 0.25,
   fallGradeDeg: 35,
-  /** Peak downhill slide speed while tumbling (m/s); eases out to zero. */
-  slideMaxMps: 22,
-  /** Body roll rate at peak slide speed (rad/s); eases out with the slide. */
-  rollRateRadS: 9,
-  tumbleMs: 2600,
-  /** Bounce height of the first touchdown (metres, decaying per bounce). */
-  firstBounceM: 0.9,
-  /** Electrical spark emission rate at the wreck (particles/s). */
-  sparkEmissionPerS: 110,
-  /** Soft blue glow emission rate at the wreck (particles/s). */
-  glowEmissionPerS: 22,
+  /** Mars surface gravity pulling the spark spatter down (m/s²). */
+  sparkGravityMs2: 3.71,
+  /** Steady spark spatter between crackles (particles/s). */
+  sparkBasePerS: 24,
   /** Extra particles thrown by each crackle burst. */
-  sparkBurstMin: 12,
-  sparkBurstMax: 26,
+  sparkBurstMin: 18,
+  sparkBurstMax: 34,
   /** How long the arcing wreck is held before the drive ends (ms). */
   holdAfterCrashMs: 4200,
+} as const
+
+/**
+ * Jagged arc-bolt flicker over the wreck: lightning-like discharge paths
+ * regenerated and re-lit at random intervals. The dark gaps between
+ * flashes are what make it read as electrical arcing rather than fire.
+ */
+const SPARK_BOLT = {
+  count: 3,
+  /** Maximum wander of a bolt endpoint from the wreck (metres, ENU). */
+  radiusM: 2.8,
+  minSegments: 4,
+  maxSegments: 6,
+  width: 2.4,
+  onMs: 70,
+  offMinMs: 50,
+  offMaxMs: 330,
+  tickMs: 40,
 } as const
 
 /**
@@ -195,17 +216,21 @@ const SPARK_CRACKLE_S = [
   0.6, 1.4, 2.2, 3.1, 4.0, 5.2, 6.5, 8.0, 10, 13, 17, 22, 28, 35, 45, 58,
 ] as const
 
-/** Bright-core radial-gradient particle texture for the electrical sparks. */
+/**
+ * Hard-edged particle texture for the sparks: a crisp dot, unlike a fire
+ * plume's soft radial gradient. Sparks are point-like flashes, not glowing
+ * blobs.
+ */
 function makeParticleTexture(): HTMLCanvasElement {
   const canvas = document.createElement('canvas')
   canvas.width = 64
   canvas.height = 64
   const context = canvas.getContext('2d')
   if (context) {
-    const gradient = context.createRadialGradient(32, 32, 1, 32, 32, 30)
+    const gradient = context.createRadialGradient(32, 32, 2, 32, 32, 26)
     gradient.addColorStop(0, 'rgba(255,255,255,1.0)')
-    gradient.addColorStop(0.25, 'rgba(255,255,255,0.85)')
-    gradient.addColorStop(0.6, 'rgba(255,255,255,0.25)')
+    gradient.addColorStop(0.68, 'rgba(255,255,255,0.95)')
+    gradient.addColorStop(0.78, 'rgba(255,255,255,0.0)')
     gradient.addColorStop(1, 'rgba(255,255,255,0.0)')
     context.fillStyle = gradient
     context.fillRect(0, 0, 64, 64)
@@ -221,9 +246,7 @@ const PREVIEW = {
   targetHeight: 30,
   margin: 90,
 } as const
-const SCOUT_MIN_MS = 45_000
-const SCOUT_MAX_MS = 150_000
-const SCOUT_MS_PER_KM = 4_000
+const SCOUT_CRUISE_MPS = 1
 
 type SiteInfo = {
   name: string
@@ -326,6 +349,9 @@ async function presampleCorridor(
 
 export default function CesiumMap() {
   const containerRef = useRef<HTMLDivElement>(null)
+  const roverViewRef = useRef<RoverViewPose | null>(null)
+  const [terrainStatus, setTerrainStatus] = useState<'loading' | 'ready' | 'fallback'>('loading')
+  const retryTerrainRef = useRef<() => void>(() => {})
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -335,7 +361,9 @@ export default function CesiumMap() {
       baseLayer: false,
       ellipsoid: MARS,
       globe: new Globe(MARS),
-      terrainProvider,
+      // Render the planet immediately; missing root DEM tiles must not
+      // prevent the whole globe (and its NASA imagery) from appearing.
+      terrainProvider: new EllipsoidTerrainProvider({ ellipsoid: MARS }),
       animation: false,
       timeline: false,
       baseLayerPicker: false,
@@ -349,8 +377,29 @@ export default function CesiumMap() {
     })
 
     viewer.clock.shouldAnimate = true
+    viewer.scene.globe.baseColor = Color.fromCssColorString('#9b6547')
+    let terrainLoadId = 0
+    const loadTerrain = async () => {
+      const id = ++terrainLoadId
+      setTerrainStatus('loading')
+      let timer: number | undefined
+      try {
+        await Promise.race([
+          Promise.all([terrainProvider.requestTileGeometry(0, 0, 0), terrainProvider.requestTileGeometry(1, 0, 0)]),
+          new Promise<never>((_, reject) => { timer = window.setTimeout(() => reject(new Error('DEM startup timeout')), 8000) }),
+        ])
+        if (viewer.isDestroyed() || id !== terrainLoadId) return
+        viewer.terrainProvider = terrainProvider
+        setTerrainStatus('ready')
+      } catch {
+        if (!viewer.isDestroyed() && id === terrainLoadId) setTerrainStatus('fallback')
+      } finally { window.clearTimeout(timer) }
+    }
+    retryTerrainRef.current = () => { void loadTerrain() }
+    void loadTerrain()
     viewer.scene.globe.showGroundAtmosphere = false
     viewer.scene.globe.depthTestAgainstTerrain = true
+    viewer.scene.globe.maximumScreenSpaceError = 2
     viewer.scene.screenSpaceCameraController.enableCollisionDetection = false
     ;(viewer.camera.frustum as PerspectiveFrustum).fov = CesiumMath.toRadians(
       55,
@@ -414,7 +463,7 @@ export default function CesiumMap() {
               },
               label: {
                 text: site.name,
-                font: '11px sans-serif',
+                font: '600 18px sans-serif',
                 fillColor: Color.WHITE,
                 showBackground: true,
                 backgroundColor: Color.fromCssColorString('#00000099'),
@@ -422,7 +471,7 @@ export default function CesiumMap() {
                 verticalOrigin: VerticalOrigin.BOTTOM,
                 heightReference: HeightReference.CLAMP_TO_GROUND,
                 disableDepthTestDistance: Number.POSITIVE_INFINITY,
-                scaleByDistance: new NearFarScalar(1.0e4, 1.0, 1.0e7, 0.4),
+                scaleByDistance: new NearFarScalar(1.0e4, 1.0, 1.0e7, 0.85),
               },
             }),
           )
@@ -476,12 +525,27 @@ export default function CesiumMap() {
     let scoutModel: Model | null = null
     let scoutFrame = 0
     let scoutToken = 0
+    let scoutGrounded = false
+    let driveSurface: ReturnType<typeof createDriveSurface> | null = null
+    let wheelDust: ReturnType<typeof createWheelDust> | null = null
     let chaseActive = false
     let chaseHandler: ScreenSpaceEventHandler | null = null
     let chaseKeydown: ((event: KeyboardEvent) => void) | null = null
     /** Electrical-spark particle systems at a crash wreck. */
     let crashParticles: ParticleSystem[] = []
     let particleTexture: HTMLCanvasElement | null = null
+    /** Jagged arc-bolt polylines flickering over the wreck. */
+    let sparkBolts: Entity[] = []
+    let sparkTimer: number | null = null
+    let scanSeconds = 0
+    let animationLast = performance.now()
+    const removeAnimationClock = viewer.scene.preUpdate.addEventListener(() => {
+      const now = performance.now()
+      const dt = Math.min(0.1, Math.max(0, (now - animationLast) / 1000))
+      animationLast = now
+      const drive = useDriveStore.getState()
+      if (scoutModel?.ready && !drive.loading && !drive.crash && drive.speedMps < 0.02) scanSeconds += dt
+    })
 
     const destroyChaseControls = () => {
       if (chaseHandler) {
@@ -495,6 +559,13 @@ export default function CesiumMap() {
     }
 
     const removeScout = () => {
+      scanSeconds = 0
+      roverViewRef.current = null
+      wheelDust?.destroy()
+      wheelDust = null
+      driveSurface?.destroy()
+      driveSurface = null
+      scoutGrounded = false
       scoutToken += 1
       chaseActive = false
       viewer.scene.screenSpaceCameraController.enableInputs = true
@@ -515,8 +586,16 @@ export default function CesiumMap() {
       }
     }
 
-    /** Remove the wreck's electrical-spark particle systems, if any. */
+    /** Remove the wreck's electrical-arc effects, if any. */
     const removeCrashEffects = () => {
+      if (sparkTimer !== null) {
+        window.clearInterval(sparkTimer)
+        sparkTimer = null
+      }
+      for (const bolt of sparkBolts) {
+        viewer.entities.remove(bolt)
+      }
+      sparkBolts = []
       for (const system of crashParticles) {
         viewer.scene.primitives.remove(system)
       }
@@ -524,21 +603,29 @@ export default function CesiumMap() {
     }
 
     /**
-     * Spawn the wreck's electrical arcing at a crash position: fast
-     * blue-white sparks with staggered crackle bursts, plus a soft blue
-     * discharge glow. Combustion cannot happen in Mars' thin CO₂
-     * atmosphere, so the rover failure is shown as electrical discharge
-     * from the wrecked power bus — still a scout-simulation
-     * dramatization, not a physical model.
+     * Spawn the wreck's electrical arcing at a crash position: jagged
+     * lightning-like bolts flickering over the wreck plus point-like spark
+     * spatter that falls ballistically under Mars gravity. Combustion
+     * cannot happen in Mars' thin CO₂ atmosphere, so the rover failure is
+     * shown as electrical discharge from the wrecked power bus — still a
+     * scout-simulation dramatization, not a physical model.
      */
     const spawnSparks = (position: Cartesian3) => {
       particleTexture ??= makeParticleTexture()
       const frame = Transforms.eastNorthUpToFixedFrame(position, MARS)
-      // Bright, fast, short-lived sparks — the arc itself.
+
+      // Spark spatter: tiny hard-edged dots spat in every direction and
+      // pulled down by Mars gravity, shrinking as they cool. A fire plume
+      // grows soft blobs upward; sparks are points that drop.
+      const gravityStep = Cartesian3.multiplyByScalar(
+        MARS.geodeticSurfaceNormal(position, new Cartesian3()),
+        -CRASH.sparkGravityMs2,
+        new Cartesian3(),
+      )
       const sparks = new ParticleSystem({
         modelMatrix: Matrix4.clone(frame),
-        emitter: new ConeEmitter(CesiumMath.toRadians(26)),
-        emissionRate: CRASH.sparkEmissionPerS,
+        emitter: new SphereEmitter(0.35),
+        emissionRate: CRASH.sparkBasePerS,
         bursts: SPARK_CRACKLE_S.map(
           (time) =>
             new ParticleBurst({
@@ -547,69 +634,144 @@ export default function CesiumMap() {
               maximum: CRASH.sparkBurstMax,
             }),
         ),
-        minimumParticleLife: 0.08,
-        maximumParticleLife: 0.32,
-        minimumSpeed: 5,
-        maximumSpeed: 13,
-        startScale: 0.5,
-        endScale: 1.2,
-        imageSize: new Cartesian2(0.5, 0.5),
+        minimumParticleLife: 0.2,
+        maximumParticleLife: 0.55,
+        minimumSpeed: 4,
+        maximumSpeed: 11,
+        startScale: 1.0,
+        endScale: 0.35,
+        minimumImageSize: new Cartesian2(0.12, 0.12),
+        maximumImageSize: new Cartesian2(0.22, 0.22),
         sizeInMeters: true,
         image: particleTexture,
-        startColor: Color.fromCssColorString('#e0f2fe').withAlpha(1.0),
-        endColor: Color.fromCssColorString('#2563eb').withAlpha(0.0),
+        startColor: Color.fromCssColorString('#f0f9ff').withAlpha(1.0),
+        endColor: Color.fromCssColorString('#3b82f6').withAlpha(0.0),
         lifetime: 60,
+        updateCallback: (particle: Particle, dt: number) => {
+          particle.velocity = Cartesian3.add(
+            particle.velocity,
+            Cartesian3.multiplyByScalar(gravityStep, dt, new Cartesian3()),
+            new Cartesian3(),
+          )
+        },
       })
       viewer.scene.primitives.add(sparks)
       crashParticles.push(sparks)
-      // Soft blue glow lingering over the wreck — discharge haze.
-      const glow = new ParticleSystem({
-        modelMatrix: Matrix4.multiplyByTranslation(
-          frame,
-          new Cartesian3(0, 0, 0.6),
-          new Matrix4(),
-        ),
-        emitter: new ConeEmitter(CesiumMath.toRadians(18)),
-        emissionRate: CRASH.glowEmissionPerS,
-        minimumParticleLife: 0.5,
-        maximumParticleLife: 1.2,
-        minimumSpeed: 0.3,
-        maximumSpeed: 1.4,
-        startScale: 1.0,
-        endScale: 3.6,
-        imageSize: new Cartesian2(1.6, 1.6),
-        sizeInMeters: true,
-        image: particleTexture,
-        startColor: Color.fromCssColorString('#60a5fa').withAlpha(0.5),
-        endColor: Color.fromCssColorString('#1e3a8a').withAlpha(0.0),
-        lifetime: 60,
-      })
-      viewer.scene.primitives.add(glow)
-      crashParticles.push(glow)
+
+      // Jagged arc bolts: randomly regenerated discharge paths that flash
+      // on and off with dark gaps between flashes — the look that separates
+      // arcing from burning. Runs on its own interval so the wreck keeps
+      // crackling even after the drive loop ends, until cleanup.
+      const jaggedPath = (): Cartesian3[] => {
+        const segments =
+          SPARK_BOLT.minSegments +
+          Math.floor(
+            Math.random() *
+              (SPARK_BOLT.maxSegments - SPARK_BOLT.minSegments + 1),
+          )
+        const points: Cartesian3[] = []
+        let x = (Math.random() * 2 - 1) * 0.7
+        let y = (Math.random() * 2 - 1) * 0.7
+        let z = 0.25 + Math.random() * 0.5
+        for (let index = 0; index <= segments; index++) {
+          points.push(
+            Matrix4.multiplyByPoint(
+              frame,
+              new Cartesian3(x, y, z),
+              new Cartesian3(),
+            ),
+          )
+          x += (Math.random() * 2 - 1) * SPARK_BOLT.radiusM * 0.4
+          y += (Math.random() * 2 - 1) * SPARK_BOLT.radiusM * 0.4
+          z = Math.max(
+            0.15,
+            Math.min(3.2, z + (Math.random() * 2 - 0.7) * SPARK_BOLT.radiusM * 0.25),
+          )
+        }
+        return points
+      }
+      for (let index = 0; index < SPARK_BOLT.count; index++) {
+        sparkBolts.push(
+          viewer.entities.add({
+            id: `astra-spark-bolt-${index}`,
+            polyline: {
+              positions: jaggedPath(),
+              width: SPARK_BOLT.width,
+              material: new PolylineGlowMaterialProperty({
+                glowPower: 0.22,
+                color: Color.fromCssColorString('#dbeafe'),
+              }),
+              show: false,
+            },
+          }),
+        )
+      }
+      let visibleUntilMs = 0
+      let nextAtMs = 0
+      sparkTimer = window.setInterval(() => {
+        const now = performance.now()
+        if (now < visibleUntilMs) return
+        const visible = now >= nextAtMs
+        for (const bolt of sparkBolts) {
+          const polyline = bolt.polyline
+          if (!polyline) continue
+          if (visible) {
+            polyline.positions = new ConstantProperty(jaggedPath())
+          }
+          polyline.show = new ConstantProperty(visible)
+        }
+        if (visible) {
+          visibleUntilMs = now + SPARK_BOLT.onMs
+          nextAtMs =
+            visibleUntilMs +
+            SPARK_BOLT.offMinMs +
+            Math.random() * (SPARK_BOLT.offMaxMs - SPARK_BOLT.offMinMs)
+        }
+      }, SPARK_BOLT.tickMs)
     }
 
-    const terrainHeightAt = (lon: number, lat: number): number | undefined =>
-      viewer.scene.globe.getHeight(Cartographic.fromDegrees(lon, lat))
+    const terrainHeightAt = (lon: number, lat: number): number | undefined => {
+      const cached = terrainProvider.cachedHeight(lon, lat)
+      const rendered = viewer.scene.globe.getHeight(Cartographic.fromDegrees(lon, lat))
+      if (rendered !== undefined && Number.isFinite(rendered)) {
+        return cached !== undefined ? Math.max(cached, rendered) : rendered
+      }
+      return cached
+    }
+
+    const wheelHeightAt = (point: Cartographic) =>
+      terrainProvider.cachedHeight(CesiumMath.toDegrees(point.longitude), CesiumMath.toDegrees(point.latitude))
+      ?? viewer.scene.globe.getHeight(point)
+
+    const removeLabelLayout = declutterLabels(viewer, terrainHeightAt)
+
+    // Recheck immediately before each Cesium render, including when paused
+    // or stopped: tile refinement must not rise through an idle rover.
+    const removeGrounding = viewer.scene.preRender.addEventListener(() => {
+      if (!scoutGrounded || !scoutModel?.ready) return
+      const matrix = scoutModel.modelMatrix
+      const lift = contactLift(matrix, wheelHeightAt)
+      if (lift <= 0) return
+      const position = MARS.cartesianToCartographic(Matrix4.getTranslation(matrix, new Cartesian3()))
+      position.height += lift
+      scoutModel.modelMatrix = Matrix4.setTranslation(matrix, MARS.cartographicToCartesian(position), new Matrix4())
+    })
 
     /**
-     * Ground reference for the rover at a route sample: the highest of the
-     * loaded-terrain height under it, the pre-sampled corridor height, and
-     * (only when neither exists) the route-profile elevation. Taking the
-     * maximum keeps the rover from sinking below any known surface estimate
-     * while tile LODs stream around the time-compressed drive — the
-     * worst case is a brief float above a coarse mesh, never a burial.
+     * Prefer the actual rendered mesh, with corridor and route-profile
+     * fallbacks while tiles load. Footprint collision is resolved after
+     * body rotation, rather than lifting everything to a coarse envelope.
      */
     const groundAt = (
       sample: RouteSample,
       corridor: ((distanceKm: number) => number | undefined) | null,
     ): number => {
-      const refs: number[] = []
       const terrain = terrainHeightAt(sample.lon, sample.lat)
-      if (terrain !== undefined && Number.isFinite(terrain)) refs.push(terrain)
+      // Contact must follow the visible mesh, including its depressions.
+      // Taking max(mesh, interpolated corridor) bridges valleys and floats.
+      if (terrain !== undefined && Number.isFinite(terrain)) return terrain
       const dense = corridor ? corridor(sample.distanceKm) : undefined
-      if (dense !== undefined && Number.isFinite(dense)) refs.push(dense)
-      if (refs.length === 0) refs.push(sample.elevationM)
-      return Math.max(...refs)
+      return dense !== undefined && Number.isFinite(dense) ? dense : sample.elevationM
     }
 
     /**
@@ -629,9 +791,8 @@ export default function CesiumMap() {
     ): number => {
       const heights: number[] = []
       const sample = (cartesian: Cartesian3) => {
-        const height = viewer.scene.globe.getHeight(
-          MARS.cartesianToCartographic(cartesian),
-        )
+        const carto = MARS.cartesianToCartographic(cartesian)
+        const height = terrainHeightAt(CesiumMath.toDegrees(carto.longitude), CesiumMath.toDegrees(carto.latitude))
         if (height !== undefined && Number.isFinite(height)) heights.push(height)
       }
       sample(cameraPosition)
@@ -862,6 +1023,7 @@ export default function CesiumMap() {
       bearing: number,
       orbit: OrbitState,
       floorHint: number,
+      stabilizeHeight?: (desired: number, minimum: number) => number,
     ) => {
       const frame = Transforms.eastNorthUpToFixedFrame(anchor, MARS)
       const heading = bearing + orbit.yaw
@@ -876,15 +1038,20 @@ export default function CesiumMap() {
         new Cartesian3(),
       )
       const floor = cameraFloorM(cameraPosition, anchor, floorHint)
-      if (Number.isFinite(floor)) {
-        const cameraCarto = MARS.cartesianToCartographic(cameraPosition)
-        if (cameraCarto.height < floor + ORBIT.margin) {
-          cameraCarto.height = floor + ORBIT.margin
-          cameraPosition = MARS.cartographicToCartesian(cameraCarto)
-        }
-      }
+      const cameraCarto = MARS.cartesianToCartographic(cameraPosition)
+      const minimum = Number.isFinite(floor) ? floor + ORBIT.margin : cameraCarto.height
+      const originalHeight = cameraCarto.height
+      cameraCarto.height = stabilizeHeight
+        ? stabilizeHeight(originalHeight, minimum)
+        : Math.max(originalHeight, minimum)
+      cameraPosition = MARS.cartographicToCartesian(cameraCarto)
+      // Move the aim with the camera's collision correction. Otherwise
+      // every terrain-floor adjustment pitches the lens toward the rover.
+      const aimCarto = MARS.cartesianToCartographic(aim)
+      aimCarto.height += cameraCarto.height - originalHeight
+      const stabilizedAim = MARS.cartographicToCartesian(aimCarto)
       const direction = Cartesian3.normalize(
-        Cartesian3.subtract(aim, cameraPosition, new Cartesian3()),
+        Cartesian3.subtract(stabilizedAim, cameraPosition, new Cartesian3()),
         new Cartesian3(),
       )
       const up = MARS.geodeticSurfaceNormal(cameraPosition, new Cartesian3())
@@ -970,6 +1137,8 @@ export default function CesiumMap() {
 
     const startScout = async (route: RouteData) => {
       removeScout()
+      scoutGrounded = true
+      useDriveStore.getState().start()
       setPreviewMarkerVisible(false)
       const token = ++scoutToken
       // The scout drives whichever traverse the user selected: the safe
@@ -978,6 +1147,10 @@ export default function CesiumMap() {
       const choice = useAppStore.getState().routeChoice
       const hazardous = choice === 'hazardous' ? route.hazardous : null
       const traverse: TraversableRoute = hazardous ?? route
+      const initialT = useAppStore.getState().previewT >= 1 ? 0 : useAppStore.getState().previewT
+      const startSample = sampleRoute(traverse, initialT)
+      roverViewRef.current = { position: Cartesian3.fromDegrees(startSample.lon, startSample.lat, groundAt(startSample, null), MARS), heading: startSample.bearing, terrainProvider }
+      useDriveStore.getState().update({ totalKm: traverse.distance_km })
       const dangers = hazardous ? hazardous.dangers : (route.dangers ?? [])
       viewer.entities.add({
         id: 'astra-scout',
@@ -1016,8 +1189,11 @@ export default function CesiumMap() {
       try {
         const model = await Model.fromGltfAsync({
           url: ROVER_URL,
-          minimumPixelSize: 14,
-          maximumScale: 12,
+          // A fixed physical scale is essential for terrain contact.
+          scale: 1,
+          modelMatrix: Transforms.eastNorthUpToFixedFrame(
+            Cartesian3.fromDegrees(startSample.lon, startSample.lat, groundAt(startSample, null) + ROVER_GROUND_CLEARANCE, MARS), MARS,
+          ),
         })
         if (token !== scoutToken) {
           model.destroy()
@@ -1039,10 +1215,17 @@ export default function CesiumMap() {
             })
           }
           if (token !== scoutToken) return
+          const deploymentStart = performance.now()
+          let deploymentProgress = 0
           try {
             model.activeAnimations.add({
               name: 'ArmatureAction',
               loop: ModelAnimationLoop.NONE,
+              multiplier: 2,
+              animationTime: () => {
+                if (!useDriveStore.getState().crash) deploymentProgress = Math.min(1, (performance.now() - deploymentStart) / 7500)
+                return deploymentProgress
+              },
             })
           } catch {
             try {
@@ -1054,8 +1237,17 @@ export default function CesiumMap() {
               // The clip is optional; the scout marker still moves.
             }
           }
+          // The supplied GLB has mast/manipulator clips, but no wheel-spin
+          // clip. Deploy the mast once; scan only while stationary. Leave
+          // manipulator deployment stowed during all traverses and crashes.
+          try {
+            model.activeAnimations.add({
+              name: 'topAction', loop: ModelAnimationLoop.REPEAT,
+              animationTime: () => (scanSeconds % 20) / 20,
+            })
+          } catch { /* model variants may omit mast scanning */ }
         }
-        void prepareAnimation()
+        await prepareAnimation()
       } catch (error) {
         console.warn('Rover model failed to load; using marker only.', error)
       }
@@ -1063,8 +1255,10 @@ export default function CesiumMap() {
       const corridor = await corridorPromise
       if (token !== scoutToken) return
 
-      const startSample = sampleRoute(traverse, 0)
       const startGround = groundAt(startSample, corridor)
+      driveSurface = createDriveSurface(viewer, traverse)
+      wheelDust = createWheelDust(viewer)
+      driveSurface.update(startSample.distanceKm * 1000, performance.now())
       const start = Cartesian3.fromDegrees(
         startSample.lon,
         startSample.lat,
@@ -1167,48 +1361,53 @@ export default function CesiumMap() {
       // early exit. Skipped while typing in the chat box.
       let speedMult = 1
       let paused = false
-      let abortRequested = false
       const isTypingTarget = (target: EventTarget | null): boolean =>
         target instanceof HTMLElement &&
         (target.tagName === 'INPUT' ||
           target.tagName === 'TEXTAREA' ||
+          target.tagName === 'BUTTON' ||
+          target.tagName === 'SELECT' ||
           target.isContentEditable)
       chaseKeydown = (event: KeyboardEvent) => {
         if (!chaseActive || isTypingTarget(event.target)) return
+        if (useDriveStore.getState().braking &&
+          (KEYS.speedUp.includes(event.code) || KEYS.slowDown.includes(event.code))) {
+          event.preventDefault()
+          return
+        }
         if (KEYS.speedUp.includes(event.code)) {
           speedMult = Math.min(SPEED_MAX, speedMult * SPEED_STEP)
         } else if (KEYS.slowDown.includes(event.code)) {
           speedMult = Math.max(SPEED_MIN, speedMult / SPEED_STEP)
         } else if (KEYS.pause.includes(event.code)) {
-          paused = !paused
+          if (event.repeat) return
+          useDriveStore.getState().togglePause()
+          event.preventDefault()
+          return
         } else if (KEYS.recenter.includes(event.code)) {
           orbit.yaw = 0
           orbit.pitch = ORBIT.defaultPitch
           orbit.distance = ORBIT.defaultDistance
         } else if (KEYS.end.includes(event.code)) {
-          abortRequested = true
+          useDriveStore.getState().stop()
+          event.preventDefault()
           return
         } else {
           return
         }
         event.preventDefault()
-        useDriveStore.getState().update({ speedMult, paused })
+        useDriveStore.getState().update({ speedMult })
       }
       window.addEventListener('keydown', chaseKeydown)
 
       const totalKm =
         traverse.profile[traverse.profile.length - 1]?.distance_km ?? 0
-      const scoutDurationMs = Math.min(
-        SCOUT_MAX_MS,
-        Math.max(SCOUT_MIN_MS, totalKm * SCOUT_MS_PER_KM),
-      )
-      // Wall-clock progress only advances while unpaused, scaled by the
-      // user's speed multiplier; distance follows a smoothstep ease so the
-      // rover launches from standstill, cruises, and pulls up at the end.
-      let elapsedMs = 0
+      // Physical metres per simulated second, independent of route length.
+      let distanceM = initialT * totalKm * 1000
+      let velocityMps = 0
       let lastFrame = performance.now()
       let lastHudPush = 0
-      let lastT = 0
+      let lastT = initialT
       // Suspension state: smoothed body height over the sampled terrain.
       let bodyHeight = startGround
       let verticalSpeed = 0
@@ -1216,9 +1415,42 @@ export default function CesiumMap() {
       // Camera state: height rides its own slow spring (never the
       // suspension), while horizontal position tracks the rover rigidly.
       let cameraHeight = startGround
+      let cameraBearing = bearing
+      let eyeHeight = MARS.cartesianToCartographic(introPose.destination).height
+      let eyeOffset = eyeHeight - startGround
+
+      const updateChaseCamera = (sample: RouteSample, ground: number, dt: number) => {
+        cameraHeight += (ground - cameraHeight) * (1 - Math.exp(-CHASE.heightSpringPerS * dt))
+        // Follow the hill's baseline immediately, smoothing only small bumps.
+        // An absolute-height lag on a fast uphill traverse sends the lens
+        // above the rover when collision clearance catches up.
+        cameraHeight = Math.max(ground - 0.3, Math.min(ground + 0.3, cameraHeight))
+        cameraBearing += wrapPi(bearing - cameraBearing) * (1 - Math.exp(-CHASE.cameraHeadingPerS * dt))
+        cameraBearing = bearing + Math.max(-0.25, Math.min(0.25, wrapPi(cameraBearing - bearing)))
+        const anchor = Cartesian3.fromDegrees(sample.lon, sample.lat, cameraHeight, MARS)
+        viewer.camera.setView(orbitPose(
+          anchor,
+          // The lens targets its own stable frame, never the rover's
+          // suspension/contact position (including during a tumble).
+          aimPoint(anchor, cameraBearing),
+          cameraBearing,
+          orbit,
+          ground,
+          (desired, minimum) => {
+            const target = Math.max(desired, minimum + 0.35) - cameraHeight
+            eyeOffset += (target - eyeOffset) * (1 - Math.exp(-CHASE.eyeHeightPerS * dt))
+            // Headroom absorbs small bumps; a real obstacle still takes
+            // priority, with a damped descent once it is behind the camera.
+            eyeOffset = Math.max(eyeOffset, minimum - cameraHeight)
+            eyeHeight = cameraHeight + eyeOffset
+            return eyeHeight
+          },
+        ))
+      }
 
       /** Shared cleanup for both natural completion and an Esc abort. */
       const endDrive = () => {
+        wheelDust?.stop()
         scoutFrame = 0
         chaseActive = false
         destroyChaseControls()
@@ -1234,10 +1466,10 @@ export default function CesiumMap() {
         setPreviewMarkerVisible(true)
       }
 
-      useDriveStore.getState().start()
       useDriveStore.getState().update({
+        loading: false,
         totalKm,
-        distanceKm: 0,
+        distanceKm: startSample.distanceKm,
         limitDeg: route.slope_limit_deg,
       })
 
@@ -1254,36 +1486,48 @@ export default function CesiumMap() {
         route.slope_limit_deg + CRASH.gradeOverLimitDeg,
       )
       type CrashState = {
-        type: 'rollover' | 'fall'
+        type: 'rollover' | 'fall' | 'jet'
         detail: string
-        startT: number
-        /** Downhill direction along the route: +1 forward, -1 back. */
-        slideDir: 1 | -1
-        slideM: number
-        roll: number
-        elapsedS: number
+        origin: RouteSample
+        body: CrashBody
         arcing: boolean
+        wreckTime: number
       }
       let crash: CrashState | null = null
 
-      const beginCrash = (type: 'rollover' | 'fall', sample: RouteSample) => {
+      const beginCrash = (type: 'rollover' | 'fall' | 'jet', sample: RouteSample) => {
+        scoutGrounded = false
+        wheelDust?.stop()
+        if (type === 'jet') wheelDust?.jet(Cartesian3.fromDegrees(sample.lon, sample.lat, groundAt(sample, corridor), MARS))
         const absGrade = Math.abs(sample.gradeDeg)
+        const probe = (offset: number) => groundAt({ ...sample,
+          lon: sample.lon + Math.sin(bearing) * offset / (METERS_PER_DEG * Math.max(0.1, Math.cos(sample.lat * Math.PI / 180))),
+          lat: sample.lat + Math.cos(bearing) * offset / METERS_PER_DEG,
+          distanceKm: sample.distanceKm + offset / 1000,
+        }, corridor)
+        const localRise = probe(2) - probe(-2)
+        const downhill = (Math.abs(localRise) > 0.01 ? localRise : sample.gradeDeg) < 0 ? 1 : -1
+        const initialPitch = -Math.atan2(localRise, 4)
         const detail =
-          type === 'fall'
+          type === 'jet'
+            ? 'Training-only CO₂ jet impulse: Mars-gravity flight and inelastic landing. No jet is observed at this route location.'
+            : type === 'fall'
             ? `Fell at km ${sample.distanceKm.toFixed(1)} — ${absGrade.toFixed(0)}° cliff drop; impact and electrical discharge.`
             : `Rollover at km ${sample.distanceKm.toFixed(1)} — ${absGrade.toFixed(0)}° grade exceeded the mission slope envelope.`
         crash = {
           type,
           detail,
-          startT: lastT,
-          slideDir: sample.gradeDeg < 0 ? 1 : -1,
-          slideM: 0,
-          roll: 0,
-          elapsedS: 0,
+          origin: sample,
+          body: { x: 0, z: terrainSupport(0, initialPitch, probe) + 0.03,
+            vx: type === 'jet' ? velocityMps : downhill * 0.8,
+            vz: type === 'jet' ? 7.5 : 0,
+            pitch: initialPitch, spin: type === 'jet' ? 0.8 : downhill * 4,
+            elapsed: 0, settledFor: 0, impacts: 0 },
           arcing: false,
+          wreckTime: 0,
         }
         const store = useDriveStore.getState()
-        store.update({ paused: false })
+        store.update({ paused: false, braking: false, speedMps: 0 })
         store.crashed({
           type,
           detail,
@@ -1296,41 +1540,32 @@ export default function CesiumMap() {
       const stepCrash = (dt: number): boolean => {
         const state = crash
         if (!state) return false
-        state.elapsedS += dt
-        const progress = Math.min(1, state.elapsedS / (CRASH.tumbleMs / 1000))
-        // Slide speed and roll rate ease out together: the wreck slows as
-        // the slope sheds its momentum, bounces decaying with it.
-        const speedFactor = (1 - progress) * (1 - progress)
-        const slideMps = CRASH.slideMaxMps * speedFactor
-        state.slideM += slideMps * dt
-        state.roll += CRASH.rollRateRadS * speedFactor * dt
-        const totalMeters = Math.max(totalKm * 1000, 1)
-        const t = Math.min(
-          1,
-          Math.max(0, state.startT + (state.slideM / totalMeters) * state.slideDir),
-        )
-        const sample = sampleRoute(traverse, t)
+        const atOffset = (x: number): RouteSample => ({ ...state.origin,
+          lon: state.origin.lon + Math.sin(bearing) * x / (METERS_PER_DEG * Math.max(0.1, Math.cos(state.origin.lat * Math.PI / 180))),
+          lat: state.origin.lat + Math.cos(bearing) * x / METERS_PER_DEG,
+          distanceKm: state.origin.distanceKm + x / 1000,
+        })
+        advanceCrash(state.body, dt, x => groundAt(atOffset(x), corridor))
+        const sample = atOffset(state.body.x)
         const ground = groundAt(sample, corridor)
-        const bounce =
-          CRASH.firstBounceM *
-          speedFactor *
-          Math.abs(Math.sin(state.elapsedS * 8))
         const position = Cartesian3.fromDegrees(
           sample.lon,
           sample.lat,
-          ground + bounce,
+          state.body.z,
           MARS,
         )
         if (scoutModel) {
-          scoutModel.modelMatrix = roverMatrix(
+          // Rotate about the body centre, not the wheel-plane origin.
+          const matrix = roverMatrix(
             position,
             bearing,
-            up,
+            Cartesian3.UNIT_Z,
+            state.body.pitch,
             0,
-            ROVER_GROUND_CLEARANCE,
-            state.roll,
           )
+          scoutModel.modelMatrix = Matrix4.multiplyByTranslation(matrix, new Cartesian3(0, 0, -1), new Matrix4())
         }
+        roverViewRef.current = { position, heading: bearing, terrainProvider }
         const scout = viewer.entities.getById('astra-scout')
         if (scout) scout.position = new ConstantPositionProperty(position)
 
@@ -1338,31 +1573,21 @@ export default function CesiumMap() {
           if (!orbit.dragging) {
             orbit.yaw *= Math.exp(-ORBIT.recenterPerS * dt)
           }
-          cameraHeight +=
-            (ground - cameraHeight) *
-            (1 - Math.exp(-CHASE.heightSpringPerS * dt))
-          const anchor = Cartesian3.fromDegrees(
-            sample.lon,
-            sample.lat,
-            cameraHeight,
-            MARS,
-          )
-          viewer.camera.setView(
-            orbitPose(anchor, aimPoint(position, bearing), bearing, orbit, ground),
-          )
+          updateChaseCamera(sample, Math.max(ground, state.body.z - bodySupport(state.body.pitch)), dt)
         }
 
         if (
           !state.arcing &&
-          state.elapsedS * 1000 >= CRASH.tumbleMs
+          state.body.settledFor >= 0.8
         ) {
           state.arcing = true
+          state.wreckTime = state.body.elapsed
           spawnSparks(position)
           useDriveStore.getState().update({ distanceKm: sample.distanceKm })
         }
         if (
           state.arcing &&
-          state.elapsedS * 1000 >= CRASH.tumbleMs + CRASH.holdAfterCrashMs
+          state.body.elapsed - state.wreckTime >= CRASH.holdAfterCrashMs / 1000
         ) {
           endDrive()
           // Recover onto the safe route when the wreck was on the
@@ -1378,35 +1603,75 @@ export default function CesiumMap() {
 
       const step = (now: number) => {
         if (token !== scoutToken) return
-        if (abortRequested || useDriveStore.getState().stopRequested) {
+        if (crash && useDriveStore.getState().stopRequested) {
           endDrive()
           return
         }
-        const dt = Math.min(0.1, Math.max(0.001, (now - lastFrame) / 1000))
+        const wallDt = document.hidden ? 0 : Math.min(1, Math.max(0, (now - lastFrame) / 1000))
+        const dt = Math.min(0.1, Math.max(0.001, wallDt))
         lastFrame = now
         if (crash) {
           if (stepCrash(dt)) scoutFrame = requestAnimationFrame(step)
           return
         }
-        if (!paused) elapsedMs += dt * 1000 * speedMult
-        const u = Math.min(1, elapsedMs / scoutDurationMs)
-        const t = u * u * (3 - 2 * u)
+        const controls = useDriveStore.getState()
+        paused = controls.paused
+        speedMult = controls.speedMult
+        const timeScale = controls.travelMode === 'preview'
+          ? Math.max(1, totalKm * 1000 / (90 * SCOUT_CRUISE_MPS))
+          : 1
+        const wantsHalt = paused || controls.stopRequested
+        // Presentation dynamics stay bounded even for a 400 km preview.
+        const suspensionDt = wantsHalt && velocityMps === 0 ? 0 : dt * speedMult
+        const ahead = sampleRoute(traverse, Math.min(1, lastT + 0.005 / Math.max(totalKm, 0.005)))
+        const here = sampleRoute(traverse, lastT)
+        const probeDistanceM = Math.max(0.01, (ahead.distanceKm - here.distanceKm) * 1000)
+        const localGrade = CesiumMath.toDegrees(Math.atan2(
+          groundAt(ahead, corridor) - groundAt(here, corridor), probeDistanceM,
+        ))
+        const gradeFactor = 1 / (1 + Math.max(Math.abs(ahead.gradeDeg), Math.abs(localGrade)) / 8)
+        const turn = Math.abs(wrapPi(ahead.bearing - bearing))
+        const remainingM = Math.max(0, totalKm * 1000 - distanceM)
+        const targetSpeed = wantsHalt ? 0 : Math.min(
+          SCOUT_CRUISE_MPS * gradeFactor / (1 + turn * 3),
+          arrivalSpeedLimit(remainingM, timeScale * speedMult, velocityMps, wallDt),
+        )
+        const motion = advanceDrive(velocityMps, targetSpeed, wallDt)
+        velocityMps = motion.speed
+        distanceM = Math.min(totalKm * 1000, distanceM + motion.distance * timeScale * speedMult)
+        if (!wantsHalt && remainingM < 0.01) distanceM = totalKm * 1000
+        const braking = wantsHalt && velocityMps > 0
+        if (braking !== controls.braking) useDriveStore.getState().update({ braking })
+        const t = totalKm > 0 ? distanceM / (totalKm * 1000) : 1
         lastT = t
         const sample = sampleRoute(traverse, t)
         const ground = groundAt(sample, corridor)
+        if (controls.jetRequested) {
+          beginCrash('jet', sample)
+          scoutFrame = requestAnimationFrame(step)
+          return
+        }
 
-        // Spring suspension toward the sampled ground: the body lags
-        // crests (airtime) and dips (wheel squish), clamped to small values.
-        const settle = 1 - Math.exp(-SUSPENSION.springPerS * dt)
-        const bodyRise = (ground - bodyHeight) * settle
-        bodyHeight += bodyRise
+        driveSurface?.update(distanceM, now)
+
+        // Suspension affects attitude; the wheel envelope stays grounded.
         const previousVerticalSpeed = verticalSpeed
-        verticalSpeed = bodyRise / dt
-        const rideHeight = Math.min(
-          Math.max(bodyHeight, ground - SUSPENSION.maxSquishM),
-          ground + SUSPENSION.maxAirM,
-        )
-        const accel = (verticalSpeed - previousVerticalSpeed) / dt
+        // Fixed-size spring integration gives the same suspension response
+        // at different frame rates and playback speeds. Downward free-fall
+        // is bounded by Mars gravity rather than an arbitrary camera ease.
+        const substeps = Math.max(1, Math.ceil(suspensionDt * 120))
+        const h = suspensionDt / substeps
+        for (let index = 0; index < substeps; index++) {
+          const omega = SUSPENSION.springPerS
+          const acceleration = Math.max(-3.71,
+            omega * omega * (ground - bodyHeight) - 2 * omega * verticalSpeed)
+          verticalSpeed += acceleration * h
+          bodyHeight += verticalSpeed * h
+        }
+        // Wheels follow the surface directly; suspension changes attitude,
+        // never pushes the wheel plane beneath the ground or leaves it airborne.
+        let rideHeight = ground
+        const accel = suspensionDt > 0 ? (verticalSpeed - previousVerticalSpeed) / suspensionDt : 0
         const tiltRaw = Math.max(
           -SUSPENSION.maxTiltRad,
           Math.min(SUSPENSION.maxTiltRad, accel * SUSPENSION.tiltGain),
@@ -1438,14 +1703,28 @@ export default function CesiumMap() {
         const clearance =
           ROVER_GROUND_CLEARANCE + (1 - up.z) * TILT_CLEARANCE_M
         if (scoutModel) {
-          scoutModel.modelMatrix = roverMatrix(
+          let matrix = roverMatrix(
             position,
             bearing,
             up,
             tiltSmooth,
             clearance,
           )
+          // Dense contact envelope from the GLB's actual wheel bounds. Apply
+          // collision correction AFTER tilt/suspension, so a lagging body
+          // normal cannot push the uphill wheels through a ridge.
+          const lift = contactLift(matrix, wheelHeightAt)
+          if (lift > 0) {
+            rideHeight += lift
+            bodyHeight = Math.max(bodyHeight, rideHeight)
+            verticalSpeed = Math.max(0, verticalSpeed)
+            Cartesian3.fromDegrees(sample.lon, sample.lat, rideHeight, MARS, position)
+            matrix = roverMatrix(position, bearing, up, tiltSmooth, clearance)
+          }
+          scoutModel.modelMatrix = matrix
+          wheelDust?.update(matrix, velocityMps)
         }
+        roverViewRef.current = { position, heading: bearing, terrainProvider }
         const scout = viewer.entities.getById('astra-scout')
         if (scout) scout.position = new ConstantPositionProperty(position)
 
@@ -1457,26 +1736,12 @@ export default function CesiumMap() {
               (ORBIT.defaultPitch - orbit.pitch) *
               (1 - Math.exp(-ORBIT.recenterPerS * 0.6 * dt))
           }
-          // Camera anchor: horizontal follows the rover exactly (so it
-          // stays centered on screen), height follows a slow spring (so
-          // suspension bumps never reach the lens).
-          cameraHeight +=
-            (ground - cameraHeight) *
-            (1 - Math.exp(-CHASE.heightSpringPerS * dt))
-          const anchor = Cartesian3.fromDegrees(
-            sample.lon,
-            sample.lat,
-            cameraHeight,
-            MARS,
-          )
-          viewer.camera.setView(
-            orbitPose(anchor, aimPoint(position, bearing), bearing, orbit, ground),
-          )
+          updateChaseCamera(sample, ground, dt)
         }
         // Throttled telemetry: the HUD, route-panel readouts, scrubber, and
         // elevation-chart cursor all track the drive live. Passing a
         // non-fatal danger zone raises the amber slip-risk banner.
-        if (now - lastHudPush > 200) {
+        if (now - lastHudPush > 200 || (wantsHalt && velocityMps === 0 && controls.speedMps !== 0)) {
           lastHudPush = now
           const zone = dangers.find(
             (candidate) =>
@@ -1491,6 +1756,10 @@ export default function CesiumMap() {
             headingDeg: (CesiumMath.toDegrees(bearing) + 360) % 360,
             speedMult,
             paused,
+            speedMps: velocityMps,
+            braking,
+            arriving: !wantsHalt && targetSpeed < SCOUT_CRUISE_MPS * gradeFactor / (1 + turn * 3),
+            timeScale,
           })
           useAppStore.getState().setPreviewT(t)
         }
@@ -1504,6 +1773,10 @@ export default function CesiumMap() {
             roverRideHeight: rideHeight,
             ground,
           }
+        }
+        if (controls.stopRequested && velocityMps === 0) {
+          endDrive()
+          return
         }
         // Crash triggers: beginCrash reports the failure and takes over the
         // loop — stepCrash owns every frame from the next one on.
@@ -1635,7 +1908,7 @@ export default function CesiumMap() {
           },
           label: {
             text,
-            font: '12px sans-serif',
+            font: '600 17px sans-serif',
             fillColor: Color.WHITE,
             showBackground: true,
             backgroundColor: Color.fromCssColorString('#000000cc'),
@@ -1732,8 +2005,8 @@ export default function CesiumMap() {
             disableDepthTestDistance: Number.POSITIVE_INFINITY,
           },
           label: {
-            text: `${zone.label} · km ${zone.distance_km.toFixed(1)}`,
-            font: '11px sans-serif',
+            text: `${zone.type === 'cliff' ? 'CRITICAL' : zone.type === 'rollover' ? 'HIGH' : 'MODERATE'} · ${zone.max_grade_deg.toFixed(1)}°\n${zone.label} · km ${zone.distance_km.toFixed(1)}`,
+            font: '600 16px sans-serif',
             fillColor: Color.WHITE,
             showBackground: true,
             backgroundColor: Color.fromCssColorString('#1c0a00cc'),
@@ -1824,6 +2097,17 @@ export default function CesiumMap() {
       }
     })
 
+    // Loading has no animation loop yet; cancel it synchronously instead
+    // of letting start() erase a Stop request after the awaits finish.
+    const unsubscribeDrive = useDriveStore.subscribe((state) => {
+      if (state.stopRequested && state.loading) {
+        viewer.camera.cancelFlight()
+        removeScout()
+        setPreviewMarkerVisible(true)
+        useAppStore.getState().setRoutePhase('preview')
+      }
+    })
+
     if (import.meta.env.DEV) {
       ;(globalThis as unknown as Record<string, unknown>).__astraViewer =
         viewer
@@ -1840,6 +2124,11 @@ export default function CesiumMap() {
     }
 
     return () => {
+      terrainLoadId++
+      removeAnimationClock()
+      removeLabelLayout()
+      removeGrounding()
+      unsubscribeDrive()
       unsubscribeStore()
       unsubscribeLayers()
       unregister()
@@ -1865,8 +2154,9 @@ export default function CesiumMap() {
   return (
     <>
       <div ref={containerRef} className="h-full w-full" />
-      <LayerPanel />
+      <LayerPanel terrainStatus={terrainStatus} onRetryTerrain={() => retryTerrainRef.current()} />
       <DriveHud />
+      <RoverCameraWindow poseRef={roverViewRef} />
     </>
   )
 }

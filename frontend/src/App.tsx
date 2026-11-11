@@ -4,6 +4,7 @@ import ConditionsCard from './components/ConditionsCard'
 import RoutePanel from './components/RoutePanel'
 import SurvivalBriefingPanel from './components/SurvivalBriefingPanel'
 import CesiumMap from './map/CesiumMap'
+import FloatingPanel from './components/FloatingPanel'
 import { useAppStore } from './store/appStore'
 import { speak, stopSpeaking } from './tts'
 import { connectCommands } from './ws/commandChannel'
@@ -82,7 +83,8 @@ export default function App() {
   return (
     <div className="relative h-full w-full overflow-hidden">
       <CesiumMap />
-      <header className="pointer-events-none absolute left-4 top-4 z-20 flex items-center gap-3 rounded-lg border border-white/10 bg-black/55 px-4 py-2 shadow-xl backdrop-blur-md">
+      <FloatingPanel id="status" title="Mission status" width={370} initial={{ left: 16, top: 16 }}>
+      <header className="flex items-center gap-3 px-4 py-2">
         <span className="text-lg font-semibold tracking-tight text-white">
           ASTRA
         </span>
@@ -100,9 +102,10 @@ export default function App() {
           <span className="text-xs text-neutral-400">checking backend…</span>
         )}
       </header>
+      </FloatingPanel>
 
-      <main className="pointer-events-none absolute inset-0 z-10 flex flex-col justify-end gap-3 p-4 pt-20 md:flex-row md:items-end">
-        <div className="pointer-events-auto w-full md:w-[420px]">
+      <main>
+        <FloatingPanel id="console" title="Mission console" width={420} initial={{ left: 16, bottom: 16 }}>
           <ChatPanel
             messages={messages}
             busy={busy}
@@ -115,12 +118,10 @@ export default function App() {
               setVoice(!voice)
             }}
           />
-        </div>
-        <aside className="pointer-events-auto flex max-h-[68vh] w-full flex-col gap-3 overflow-y-auto md:ml-auto md:w-[380px]">
-          {briefing ? <SurvivalBriefingPanel briefing={briefing} /> : null}
-          {conditions ? <ConditionsCard conditions={conditions} /> : null}
-          {route ? <RoutePanel route={route} /> : null}
-        </aside>
+        </FloatingPanel>
+        {briefing ? <FloatingPanel id="briefing" title="Science briefing" width={420} initial={{ right: 460, top: 110 }}><SurvivalBriefingPanel briefing={briefing} /></FloatingPanel> : null}
+        {conditions ? <FloatingPanel id="conditions" title="NASA conditions" width={380} initial={{ right: 460, top: 110 }}><ConditionsCard conditions={conditions} /></FloatingPanel> : null}
+        {route ? <FloatingPanel id="route" title="Traverse plan" width={420} initial={{ right: 16, bottom: 16 }}><div className="max-h-[62vh] overflow-auto"><RoutePanel route={route} /></div></FloatingPanel> : null}
       </main>
     </div>
   )

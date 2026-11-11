@@ -22,6 +22,7 @@ export default function RoutePanel({ route }: { route: RouteData }) {
   const routeChoice = useAppStore((state) => state.routeChoice)
   const setRouteChoice = useAppStore((state) => state.setRouteChoice)
   const stopDrive = useDriveStore((state) => state.stop)
+  const stopping = useDriveStore((state) => state.stopRequested)
   const crash = useDriveStore((state) => state.crash)
 
   // Everything below reflects the selected traverse: the safe (planner)
@@ -168,9 +169,10 @@ export default function RoutePanel({ route }: { route: RouteData }) {
             <button
               type="button"
               onClick={stopDrive}
+              disabled={stopping}
               className="rounded-md border border-amber-400/40 bg-amber-400/15 px-2.5 py-1 text-[11px] font-medium text-amber-200 transition hover:bg-amber-400/25"
             >
-              ■ Stop scout
+              {stopping ? 'Braking…' : '■ Stop scout'}
             </button>
           ) : (
             <button
@@ -178,7 +180,7 @@ export default function RoutePanel({ route }: { route: RouteData }) {
               onClick={() => setRoutePhase('simulating')}
               className="rounded-md border border-cyan-400/40 bg-cyan-400/15 px-2.5 py-1 text-[11px] font-medium text-cyan-200 transition hover:bg-cyan-400/25"
             >
-              ▶ Play traverse
+              ▶ {previewT > 0 && previewT < 1 ? 'Drive from here' : 'Start scout'}
             </button>
           )}
         </div>
@@ -203,6 +205,8 @@ export default function RoutePanel({ route }: { route: RouteData }) {
         </div>
       </section>
 
+      <p className="mt-2 text-[10px] text-neutral-400">Fast traverse by default · roughly 90 seconds on flat terrain at 1× playback, longer on slopes. Switch to Real-time in the driving HUD for close terrain inspection.</p>
+
       <div className="mt-3">
         <ElevationProfileChart
           traverse={selected}
@@ -214,10 +218,10 @@ export default function RoutePanel({ route }: { route: RouteData }) {
       {crash ? (
         <div className="mt-2 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-[11px] leading-relaxed text-red-200">
           <span className="font-semibold uppercase tracking-wider text-red-300">
-            Scout lost · {crash.type === 'fall' ? 'fall' : 'rollover'}
+            Scout lost · {crash.type === 'jet' ? 'training jet' : crash.type === 'fall' ? 'fall' : 'rollover'}
           </span>
           <span className="ml-2">{crash.detail}</span>
-          {route.hazardous ? (
+          {route.hazardous && crash.type !== 'jet' ? (
             <p className="mt-1 text-red-300/80">
               The planner's safe route avoids this danger zone.
             </p>
@@ -242,6 +246,10 @@ export default function RoutePanel({ route }: { route: RouteData }) {
                 />
                 <span>
                   km {zone.distance_km.toFixed(1)} — {zone.label}
+                  <span className="block font-medium text-orange-200">
+                    {zone.type === 'cliff' ? 'Critical · fall / impact' : zone.type === 'rollover' ? 'High · rollover / loss of traction' : 'Moderate · wheel slip'}
+                    {' · peak '}{zone.max_grade_deg.toFixed(1)}° · {zone.span_km.toFixed(2)} km zone
+                  </span>
                   {zone.over_limit ? (
                     <span className="text-red-400">
                       {' '}
@@ -260,6 +268,7 @@ export default function RoutePanel({ route }: { route: RouteData }) {
       </section>
 
       <div className="mt-2 space-y-1 text-[10px] leading-relaxed text-neutral-500">
+        <p>MOLA-derived slope hazards only. Geysers, loose soil and small obstacles cannot be inferred from this DEM. CO₂ jet training is hypothetical and separate from this route assessment.</p>
         {route.note ? <p>{route.note}</p> : null}
         {route.hazard_note ? (
           <p className="text-amber-200/80">{route.hazard_note}</p>
