@@ -8,13 +8,98 @@ from typing import Any
 import numpy as np
 from fastapi import APIRouter, HTTPException, Response
 from PIL import Image
+from pydantic import BaseModel, Field
 
+from . import dem
 from .dem import MARS_RADIUS_KM, DemUnavailable, heightmap
 from .gazetteer import SITES
-from .regions import BRIEFINGS
+from .location_context import location_context
+from .regions import BRIEFINGS, briefing_for
 from .rems import REMS_URL, latest_sol
 
 router = APIRouter()
+
+
+@router.get("/locations/context")
+def point_context(lon: float, lat: float) -> dict[str, Any]:
+    if not (-180 <= lon <= 180 and -90 <= lat <= 90):
+        raise HTTPException(400, "Invalid coordinates")
+    return location_context(lon, lat)
+
+
+@router.get("/locations/inspect")
+def inspect_location(lon: float, lat: float) -> dict[str, Any]:
+    if not (-180 <= lon <= 180 and -90 <= lat <= 90):
+        raise HTTPException(400, "Invalid coordinates")
+    nearest = min(SITES, key=lambda s: dem._great_circle_km(lon, lat, s.lon, s.lat))
+    briefing = briefing_for(nearest.name)
+    # NASA Trek's geographic tile matrix has twice as many columns as rows.
+    x = (lon + 180) / 360 * 256
+    y = (90 - lat) / 180 * 128
+    col, row = min(255, int(x)), min(127, int(y))
+    elevation = None
+    note = ""
+    try:
+        elevation = dem.elevation_m(lon, lat)
+        resolution = dem.pixel_size_km()
+    except (OSError, RuntimeError) as exc:
+        resolution = None
+        note = f"Elevation unavailable: {exc}"
+    return {
+        "lon": lon, "lat": lat, "elevation_m": elevation,
+        "resolution_km": resolution, "note": note,
+        "background": {
+            "title": briefing["headline"] if briefing else nearest.name,
+            "text": briefing["summary"] if briefing else f"{nearest.name} is a {nearest.kind.lower()} on Mars. {nearest.description}.",
+            "source_url": briefing["source_url"] if briefing else nearest.source_url,
+            "context_site": nearest.name,
+        },
+        "nearest": location_context(lon, lat),
+        "image_url": "https://trek.nasa.gov/tiles/Mars/EQ/"
+                     "Mars_Viking_MDIM21_ClrMosaic_global_232m/1.0.0/default/default028mm/"
+                     f"7/{row}/{col}.jpg",
+        "image_x": x - col, "image_y": y - row,
+        "source_url": dem.SOURCE_URL, "imagery_source_url": "https://trek.nasa.gov/mars/",
+    }
+
+
+class RouteRequest(BaseModel):
+    start_lon: float = Field(ge=-180, le=180)
+    start_lat: float = Field(ge=-90, le=90)
+    end_lon: float = Field(ge=-180, le=180)
+    end_lat: float = Field(ge=-90, le=90)
+    max_slope_deg: float = Field(default=15, ge=1, le=45)
+
+
+@router.post("/routes/plan")
+def coordinate_route(request: RouteRequest) -> dict[str, Any]:
+    distance = dem._great_circle_km(request.start_lon, request.start_lat,
+                                    request.end_lon, request.end_lat)
+    if distance < 0.001:
+        raise HTTPException(400, "The same location cannot be both start and destination.")
+    if distance < 1:
+        raise HTTPException(400, "Choose locations at least 1 km apart (maximum 400 km).")
+    try:
+        result = dem.plan(**request.model_dump())
+        resolution = dem.pixel_size_km()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {
+        **{key: value for key, value in result["stats"].items() if key != "points"},
+        "start": location_context(request.start_lon, request.start_lat)["label"],
+        "end": location_context(request.end_lon, request.end_lat)["label"],
+        "slope_limit_deg": request.max_slope_deg,
+        "slope_compliant": result["slope_compliant"],
+        "coordinates": result["coordinates"], "profile": result["profile"],
+        "dangers": result["dangers"], "hazardous": result["hazardous"],
+        "note": result["note"],
+        "eta_hours": result["stats"]["distance_km"] * 1000 / dem.PACE_M_S / 3600,
+        "pace_m_s": dem.PACE_M_S, "eta_note": "Simulated scout pace.",
+        "resolution_note": f"NASA MOLA {resolution:.1f} km/px: regional grades only; unresolved rocks, sand and cliffs are not assessed.",
+        "source_url": dem.SOURCE_URL, "retrieved_at": result["computed_at"],
+    }
 
 
 @router.get("/sites")

@@ -84,7 +84,8 @@ export default function RoutePanel({ route }: { route: RouteData }) {
                 : 'text-neutral-400 hover:text-neutral-200'
             }`}
           >
-            Safe route · {route.distance_km.toFixed(1)} km
+            Slope-compliant · {route.distance_km.toFixed(1)} km
+            <span className="mt-1 block font-normal">Max grade {route.max_grade_deg.toFixed(1)}°</span>
           </button>
           <button
             type="button"
@@ -96,12 +97,16 @@ export default function RoutePanel({ route }: { route: RouteData }) {
                 : 'text-neutral-400 hover:text-neutral-200'
             }`}
           >
-            Direct · {route.hazardous.distance_km.toFixed(1)} km ·{' '}
+            Hazardous direct · {route.hazardous.distance_km.toFixed(1)} km ·{' '}
             {route.hazardous.dangers.length} danger zone
             {route.hazardous.dangers.length === 1 ? '' : 's'}
+            <span className="mt-1 block font-normal">Max grade {route.hazardous.max_grade_deg.toFixed(1)}°</span>
           </button>
         </div>
-      ) : null}
+      ) : <div className="mt-3 grid grid-cols-2 gap-2 text-xs" aria-label="Route comparison">
+        <div className="rounded border border-emerald-300/20 p-2"><p className="text-emerald-200">Slope-compliant route</p><p>{route.slope_compliant ? `${route.distance_km.toFixed(1)} km · ${route.max_grade_deg.toFixed(1)}° max grade` : 'No compliant path found'}</p></div>
+        <div className="rounded border border-orange-300/20 p-2"><p className="text-orange-200">Hazardous route</p><p>{route.slope_compliant ? 'No hazardous alternative identified' : `Direct: ${route.distance_km.toFixed(1)} km · ${route.max_grade_deg.toFixed(1)}° max grade`}</p></div>
+      </div>}
 
       <dl className="mt-3 grid grid-cols-3 gap-2 text-xs">
         <div className="rounded-md bg-white/[0.04] px-2.5 py-2">
@@ -231,7 +236,7 @@ export default function RoutePanel({ route }: { route: RouteData }) {
 
       <section className="mt-2">
         <p className="text-[10px] uppercase tracking-[0.22em] text-neutral-500">
-          Danger zones · {hazardous ? 'direct route' : 'safe route'}
+          Danger zones · {hazardous ? 'direct route' : route.slope_compliant ? 'slope-compliant route' : 'non-compliant route'}
         </p>
         {dangers.length > 0 ? (
           <ul className="mt-1.5 space-y-1">
@@ -270,6 +275,7 @@ export default function RoutePanel({ route }: { route: RouteData }) {
       <div className="mt-2 space-y-1 text-[10px] leading-relaxed text-neutral-500">
         <p>MOLA-derived slope hazards only. Geysers, loose soil and small obstacles cannot be inferred from this DEM. CO₂ jet training is hypothetical and separate from this route assessment.</p>
         {route.note ? <p>{route.note}</p> : null}
+        {!route.hazardous && <p>{route.slope_compliant ? 'The direct route meets the slope limit; no hazardous alternative was identified.' : 'No slope-compliant route was found. The displayed route exceeds the selected limit.'}</p>}
         {route.hazard_note ? (
           <p className="text-amber-200/80">{route.hazard_note}</p>
         ) : null}

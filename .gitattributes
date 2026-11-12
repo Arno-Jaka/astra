@@ -1,0 +1,7 @@
+backend/data/dem/*.img filter=lfs diff=lfs merge=lfs -text
+data/dem/*.img filter=lfs diff=lfs merge=lfs -text
+data/dem/*.tif filter=lfs diff=lfs merge=lfs -text
+data/dem/*.tiff filter=lfs diff=lfs merge=lfs -text
+# Preserve NASA sidecars byte-for-byte, including their original CRLF endings.
+backend/data/dem/*.lbl -text whitespace=cr-at-eol
+backend/data/dem/*.hdr -text whitespace=cr-at-eol

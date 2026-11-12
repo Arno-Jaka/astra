@@ -1,5 +1,33 @@
 # ASTRA
 
+### Inspect locations and select a traverse
+
+Hold the pointer over a location's dot or label for **1.5 seconds** to open a nearby
+location card with MOLA elevation, NASA Viking orbital imagery, a marker for
+the inspected point, and source links. Nearest named sites provide context;
+they are not measurements at the hovered point. Dots and labels enlarge on
+hover; the card stays inside the viewport beside the target and dismisses when
+the pointer leaves its dot or label. Start and destination dots have spinning
+cyan and orange rings respectively (static when reduced motion is requested).
+
+Single-click anywhere on Mars (a site marker or open terrain) to select a start,
+then single-click a destination
+(1–400 km apart). No setup panel is needed; Escape cancels the selection.
+Routes use a 15° slope limit. Hover cards still open only over dots or labels.
+Off-site endpoints show distance and compass bearing from the nearest site in
+ASTRA's curated catalog, e.g. “12.4 km NE (45°) from Gale Crater.” Bearings are
+initial great-circle bearings clockwise from north **from the site to the point**,
+not travel headings; distances are surface distances, not planned-route lengths.
+The top-center search bar lists named sites with background information and
+sources. Set either endpoint from a search result or the map; selecting both
+automatically computes the comparison. A location cannot be both endpoints.
+The route panel compares a
+slope-compliant detour with the hazardous direct route when the planner finds
+both. It explicitly reports when no compliant route or hazardous alternative
+was found. NASA MOLA supports regional grade estimates, not rock/sand detection
+or certified rover navigation. Hover inspection pauses during camera motion
+and rover simulation. Cancel stops pending route display.
+
 Interplanetary Survival Guide: Martian Map — NASA Space Apps Challenge 2026.
 
 ASTRA is a hyperlocal Mars excursion planner. Ask it for a site (by text or
@@ -167,9 +195,18 @@ cp .env.example backend/.env
 # NASA_API_KEY is optional; the demo data sources are keyless
 ```
 
-### 1. MOLA DEM (once, ~127 MB)
+### 1. MOLA DEM (Git LFS or direct NASA download)
 
-The MOLA MEGDR grid is not committed. The app prefers the 32 ppd grid and
+The MOLA MEGDR grids are tracked with Git LFS (the 32 ppd file exceeds GitHub's
+100 MiB regular-file limit). After cloning, install Git LFS and run:
+
+```sh
+git lfs install
+git lfs pull
+```
+
+Alternatively, download the 32 ppd grid directly from NASA using the commands
+below. The app prefers the 32 ppd grid and
 falls back to the 16 ppd one (it reads the grid size from the `.lbl` sidecar,
 so either works):
 
@@ -260,6 +297,12 @@ computes measurements.
 
 ## Known limitations
 
+- Route planning currently supports endpoints 1–400 km apart. Global,
+  multi-resolution route planning remains future work.
+- The nearest-site reference is selected from ASTRA's curated catalog, not the
+  complete IAU gazetteer. Bearings/distances are computed geometry, not new NASA
+  observations. The app reports slope compliance, not a globally safest route.
+
 - MOLA is ~1.9 km/pixel (32 ppd), so route grades and the rover's terrain
   tilt are regional estimates, not trafficability. Meter-scale landforms
   (rocks, ridges, potholes) are below MOLA resolution and are not measured;
@@ -287,6 +330,13 @@ computes measurements.
   a HiRISE/CTX DTM overlay would be needed for measured meter-scale terrain.
 
 ## Checks
+
+See [project and competition status](docs/PROJECT_STATUS.md) for completed work,
+remaining limitations, and the official-rule verification still needed.
+
+With the dev servers running and a test Chrome instance started with
+`--remote-debugging-port=9222`, run `node frontend/scripts/verify-map-explorer.mjs`
+to check hover, off-site selection/bearings, duplicate prevention and search routing.
 
 ```sh
 cd backend && .venv/bin/ruff check app

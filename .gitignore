@@ -17,16 +17,6 @@ node_modules/
 frontend/dist/
 dist/
 
-# Large / regenerable data caches
-data/dem/*.tif
-data/dem/*.tiff
-data/dem/*.vrt
-data/dem/*.img
-data/dem/*.lbl
-backend/data/dem/
-data/tiles/
-data/cache/
-
 # OS / editor
 .DS_Store
 *.log

@@ -19,6 +19,12 @@ export type CommandHandler = (payload: Payload) => void | Promise<void>
 
 const handlers = new Map<string, CommandHandler>()
 
+export async function dispatchLocalCommand(name: string, payload: Payload) {
+  const handler = handlers.get(name)
+  if (!handler) throw new Error('Map is not ready')
+  await handler(payload)
+}
+
 let socket: WebSocket | null = null
 
 export function onCommand(name: string, handler: CommandHandler): () => void {

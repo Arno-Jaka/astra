@@ -39,6 +39,7 @@ import type {
 } from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import DriveHud from '../components/DriveHud'
+import MapExplorer from '../components/MapExplorer'
 import RoverCameraWindow, { type RoverViewPose } from '../components/RoverCameraWindow'
 import LayerPanel from '../components/LayerPanel'
 import {
@@ -350,6 +351,7 @@ async function presampleCorridor(
 export default function CesiumMap() {
   const containerRef = useRef<HTMLDivElement>(null)
   const roverViewRef = useRef<RoverViewPose | null>(null)
+  const [mapViewer, setMapViewer] = useState<Viewer | null>(null)
   const [terrainStatus, setTerrainStatus] = useState<'loading' | 'ready' | 'fallback'>('loading')
   const retryTerrainRef = useRef<() => void>(() => {})
 
@@ -377,6 +379,7 @@ export default function CesiumMap() {
     })
 
     viewer.clock.shouldAnimate = true
+    setMapViewer(viewer)
     viewer.scene.globe.baseColor = Color.fromCssColorString('#9b6547')
     let terrainLoadId = 0
     const loadTerrain = async () => {
@@ -1125,7 +1128,7 @@ export default function CesiumMap() {
         viewer.entities.removeById(id)
       }
       // Danger pins are drawn per route with generated ids.
-      for (const entity of viewer.entities.values) {
+      for (const entity of [...viewer.entities.values]) {
         if (
           typeof entity.id === 'string' &&
           entity.id.startsWith('astra-danger-')
@@ -2156,6 +2159,7 @@ export default function CesiumMap() {
       <div ref={containerRef} className="h-full w-full" />
       <LayerPanel terrainStatus={terrainStatus} onRetryTerrain={() => retryTerrainRef.current()} />
       <DriveHud />
+      {mapViewer && !mapViewer.isDestroyed() && <MapExplorer viewer={mapViewer} />}
       <RoverCameraWindow poseRef={roverViewRef} />
     </>
   )
