@@ -31,6 +31,7 @@ export default function RoutePanel({ route }: { route: RouteData }) {
     routeChoice === 'hazardous' && route.hazardous ? route.hazardous : null
   const selected = hazardous ?? route
   const dangers = hazardous ? hazardous.dangers : (route.dangers ?? [])
+  const crew = selected.crew_estimate
 
   const sample = sampleRoute(selected, previewT)
   const headingDeg = Math.round(
@@ -164,6 +165,17 @@ export default function RoutePanel({ route }: { route: RouteData }) {
           </dd>
         </div>
       </dl>
+
+      {crew ? <section aria-label="Crew EVA assessment" className="mt-3 space-y-2 rounded border border-cyan-300/25 p-3 text-xs">
+        <h3 className="font-semibold text-cyan-200">Astronaut science traverse · scenario estimate</h3>
+        <p>{crew.profile.objective}</p>
+        <p>Destination is a user-selected candidate science station, not a verified outcrop.</p>
+        <div className="grid grid-cols-2 gap-2"><p>Outbound: {crew.outbound_hours.toFixed(2)} h</p><p>Return: {crew.return_hours.toFixed(2)} h</p><p>Science: {crew.profile.science_minutes} min</p><p>Reserve: {crew.profile.reserve_minutes} min</p></div>
+        <p>Round-trip allocation: <strong>{crew.planned_hours.toFixed(2)} / {crew.profile.budget_hours} h</strong></p>
+        <p className={crew.within_budget ? 'text-cyan-200' : 'text-red-300'}>{crew.within_budget ? `Within assumed time budget (${crew.budget_margin_hours.toFixed(2)} h remaining)` : `Exceeds assumed time budget by ${Math.abs(crew.budget_margin_hours).toFixed(2)} h — shorten the excursion or revise the scenario`}</p>
+        <p className="text-amber-200">{hazardous || !route.slope_compliant ? 'Exceeds the selected regional slope envelope.' : 'Meets the selected regional slope envelope.'} Local obstacles, radiation and suit consumables remain unassessed.</p>
+        <p className="text-neutral-400">Calculation snapshot: {crew.profile.pace_m_s} m/s + {crew.profile.mobility_allowance_pct}% suit/equipment time allowance. {crew.note}</p>
+      </section> : null}
 
       <section className="mt-3 rounded-lg border border-cyan-400/25 bg-cyan-400/[0.05] px-3 pb-2.5 pt-2">
         <div className="flex items-center justify-between">

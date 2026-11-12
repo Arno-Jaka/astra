@@ -4,7 +4,8 @@ import SelectionRings from './SelectionRings'
 import SiteSearch from './SiteSearch'
 import { MARS } from '../map/trek'
 import { useAppStore } from '../store/appStore'
-import { dispatchLocalCommand } from '../ws/commandChannel'
+import { useMissionStore } from '../store/missionStore'
+import { dispatchLocalCommand, onCommand } from '../ws/commandChannel'
 
 export type Point = { lon: number; lat: number; name?: string; relative?: string; contextSource?: string }
 type Inspection = Point & {
@@ -180,9 +181,10 @@ export default function MapExplorer({ viewer }: { viewer: Viewer }) {
       if (!origin || !destination) return
       const controller = new AbortController(); routeRequest.current?.abort(); routeRequest.current = controller
       current.current.mode = 'busy'; setMode('busy'); setError('')
+      const mission = useMissionStore.getState()
       try {
         const response = await fetch('/api/routes/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
-          body: JSON.stringify({ start_lon: origin.lon, start_lat: origin.lat, end_lon: destination.lon, end_lat: destination.lat, max_slope_deg: 15 }) })
+          body: JSON.stringify({ start_lon: origin.lon, start_lat: origin.lat, end_lon: destination.lon, end_lat: destination.lat, max_slope_deg: mission.slopeLimit, crew: mission.crew }) })
         const data = await response.json()
         if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Invalid route inputs')
         if (controller.signal.aborted) return
@@ -193,6 +195,11 @@ export default function MapExplorer({ viewer }: { viewer: Viewer }) {
       }
     }
     selectPoint.current = (point, role) => { void select(point, role) }
+    const unregisterCrewPlan = onCommand('replan_crew_route', async () => {
+      if (!current.current.start || !current.current.end) throw new Error('Select a start and destination on the map or in site search first.')
+      if (current.current.mode === 'busy') throw new Error('A route is already being calculated.')
+      await select(current.current.end, 'end')
+    })
     handler.setInputAction(({ position }: { position: Cartesian2 }) => {
       const point = pick(position)
       if (point) void select(point)
@@ -218,6 +225,7 @@ export default function MapExplorer({ viewer }: { viewer: Viewer }) {
     window.addEventListener('resize', cancel)
     return () => {
       cancel(); routeRequest.current?.abort(); handler.destroy(); removeStart(); removeEnd(); unsubscribe()
+      unregisterCrewPlan()
       Object.values(contextControllers).forEach(controller => controller?.abort())
       canvas.removeEventListener('mouseleave', cancel)
       window.removeEventListener('resize', cancel)

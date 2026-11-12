@@ -14,10 +14,16 @@ from . import dem
 from .dem import MARS_RADIUS_KM, DemUnavailable, heightmap
 from .gazetteer import SITES
 from .location_context import location_context
+from .mission import MISSION, CrewProfile, crew_estimate
 from .regions import BRIEFINGS, briefing_for
 from .rems import REMS_URL, latest_sol
 
 router = APIRouter()
+
+
+@router.get("/mission")
+def mission() -> dict[str, Any]:
+    return MISSION
 
 
 @router.get("/locations/context")
@@ -69,6 +75,7 @@ class RouteRequest(BaseModel):
     end_lon: float = Field(ge=-180, le=180)
     end_lat: float = Field(ge=-90, le=90)
     max_slope_deg: float = Field(default=15, ge=1, le=45)
+    crew: CrewProfile | None = None
 
 
 @router.post("/routes/plan")
@@ -80,12 +87,15 @@ def coordinate_route(request: RouteRequest) -> dict[str, Any]:
     if distance < 1:
         raise HTTPException(400, "Choose locations at least 1 km apart (maximum 400 km).")
     try:
-        result = dem.plan(**request.model_dump())
+        result = dem.plan(**request.model_dump(exclude={"crew"}))
         resolution = dem.pixel_size_km()
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except (OSError, RuntimeError) as exc:
         raise HTTPException(503, str(exc)) from exc
+    hazardous = result["hazardous"]
+    if hazardous is not None and request.crew is not None:
+        hazardous = {**hazardous, "crew_estimate": crew_estimate(hazardous["distance_km"], request.crew)}
     return {
         **{key: value for key, value in result["stats"].items() if key != "points"},
         "start": location_context(request.start_lon, request.start_lat)["label"],
@@ -93,7 +103,8 @@ def coordinate_route(request: RouteRequest) -> dict[str, Any]:
         "slope_limit_deg": request.max_slope_deg,
         "slope_compliant": result["slope_compliant"],
         "coordinates": result["coordinates"], "profile": result["profile"],
-        "dangers": result["dangers"], "hazardous": result["hazardous"],
+        "dangers": result["dangers"], "hazardous": hazardous,
+        "crew_estimate": crew_estimate(result["stats"]["distance_km"], request.crew) if request.crew else None,
         "note": result["note"],
         "eta_hours": result["stats"]["distance_km"] * 1000 / dem.PACE_M_S / 3600,
         "pace_m_s": dem.PACE_M_S, "eta_note": "Simulated scout pace.",

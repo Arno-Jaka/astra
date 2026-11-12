@@ -20,7 +20,13 @@ export const dangerSchema = z.object({
 
 export type RouteDanger = z.infer<typeof dangerSchema>
 
+const crewEstimateSchema = z.object({
+  profile: z.object({ objective: z.string(), pace_m_s: z.number(), mobility_allowance_pct: z.number(), science_minutes: z.number(), reserve_minutes: z.number(), budget_hours: z.number() }),
+  outbound_hours: z.number(), return_hours: z.number(), planned_hours: z.number(), budget_margin_hours: z.number(), within_budget: z.boolean(), note: z.string(),
+})
+
 export const hazardousRouteSchema = z.object({
+  crew_estimate: crewEstimateSchema.nullable().optional(),
   distance_km: z.number(),
   ascent_m: z.number(),
   descent_m: z.number(),
@@ -35,6 +41,7 @@ export const hazardousRouteSchema = z.object({
 export type HazardousRouteData = z.infer<typeof hazardousRouteSchema>
 
 export const routeSchema = z.object({
+  crew_estimate: crewEstimateSchema.nullable().optional(),
   start: z.string(),
   end: z.string(),
   coordinates: z.array(z.tuple([z.number(), z.number()])),

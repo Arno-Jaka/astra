@@ -5,6 +5,7 @@ import RoutePanel from './components/RoutePanel'
 import SurvivalBriefingPanel from './components/SurvivalBriefingPanel'
 import CesiumMap from './map/CesiumMap'
 import FloatingPanel from './components/FloatingPanel'
+import CrewMissionPanel from './components/CrewMissionPanel'
 import { useAppStore } from './store/appStore'
 import { speak, stopSpeaking } from './tts'
 import { connectCommands } from './ws/commandChannel'
@@ -15,7 +16,7 @@ const WELCOME: ChatMessage = {
   id: 0,
   role: 'assistant',
   content:
-    'ASTRA online. I can fly the map, pull live REMS weather from Gale, and plan slope-limited traverses on MOLA terrain. Try "Take me to Gale Crater."',
+    'ASTRA online. Plan a Mars surface-science excursion using the Astronaut science mission panel. Set a science objective and crew assumptions, then select departure and science points on the map. I can also fly to sites, retrieve Gale REMS reports and explain MOLA route hazards.',
 }
 
 export default function App() {
@@ -105,6 +106,7 @@ export default function App() {
       </FloatingPanel>
 
       <main>
+        <CrewMissionPanel />
         <FloatingPanel id="console" title="Mission console" width={420} initial={{ left: 16, bottom: 16 }}>
           <ChatPanel
             messages={messages}

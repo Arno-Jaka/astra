@@ -1,5 +1,31 @@
 # ASTRA
 
+## Astronaut surface-science workflow
+
+Start with **Astronaut science mission**. The default objective is investigating
+Mount Sharp boxwork ridges for evidence of ancient groundwater, with NASA's
+[Curiosity Mastcam observation from May 22, 2025](https://science.nasa.gov/photojournal/curiosity-views-boxwork-patterns-at-a-distance/)
+(PIA26560). **Explore science region** frames Mount Sharp and enables Viking
+optical imagery with the MOLA slope overlay. The region coordinate is not a
+surveyed boxwork outcrop; choose a candidate science station using the source
+imagery and map context.
+
+The mission panel combines **optical, topographic and atmospheric** context.
+REMS values retain their observation sol/date and age, are Gale-station-only,
+and show an explicit unavailable state if NASA's feed cannot be reached.
+
+Set a science objective, slope envelope, assumed walking pace, suit/equipment
+time allowance, science-stop time, reserve and total EVA budget. Select a
+departure/return point and a science destination. Both route alternatives,
+when available, get their own **crew round-trip estimate**, separate from rover
+simulation ETA. Return travel assumes retracing the outbound route. The route
+keeps a snapshot of its assumptions; after editing, use **Recalculate selected
+crew route**. A slope-compliant route may still exceed the EVA budget.
+
+Defaults are illustrative inputs, not NASA suit limits. Radiation, consumables,
+metabolic demand, soil traction and local obstacles are not modeled. See the
+[challenge objective mapping](docs/CHALLENGE_ALIGNMENT.md).
+
 ### Inspect locations and select a traverse
 
 Hold the pointer over a location's dot or label for **1.5 seconds** to open a nearby
@@ -13,7 +39,8 @@ cyan and orange rings respectively (static when reduced motion is requested).
 Single-click anywhere on Mars (a site marker or open terrain) to select a start,
 then single-click a destination
 (1–400 km apart). No setup panel is needed; Escape cancels the selection.
-Routes use a 15° slope limit. Hover cards still open only over dots or labels.
+Routes default to a 15° slope limit, adjustable in the mission panel. Hover cards
+still open only over dots or labels.
 Off-site endpoints show distance and compass bearing from the nearest site in
 ASTRA's curated catalog, e.g. “12.4 km NE (45°) from Gale Crater.” Bearings are
 initial great-circle bearings clockwise from north **from the site to the point**,
