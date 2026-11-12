@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { VehicleKind } from '../map/taskAssignment'
 
 /** Crash outcome when the scout enters an over-stability danger zone. */
 export type DriveCrash = {
@@ -10,6 +11,10 @@ export type DriveCrash = {
 
 /** Live telemetry pushed from the scout simulation step loop. */
 export type DriveTelemetry = {
+  vehicle: VehicleKind
+  completion: 'idle' | 'arrived' | 'stopped' | 'risk-hold'
+  missionPhase: 'aboard' | 'disembarking' | 'crew-approach' | 'rover-approach' | 'complete' | 'hold'
+  crewMessage: string
   distanceKm: number
   totalKm: number
   gradeDeg: number
@@ -35,6 +40,8 @@ type DriveState = DriveTelemetry & {
   /** Set by the Stop button / failure recovery; ends the drive. */
   stopRequested: boolean
   jetRequested: boolean
+  jumpRequested: boolean
+  jump: () => void
   triggerJet: () => void
   start: () => void
   end: () => void
@@ -49,6 +56,10 @@ type DriveState = DriveTelemetry & {
 }
 
 const EMPTY: DriveTelemetry = {
+  vehicle: 'rover',
+  completion: 'idle',
+  missionPhase: 'aboard',
+  crewMessage: '',
   distanceKm: 0,
   totalKm: 0,
   gradeDeg: 0,
@@ -72,11 +83,13 @@ export const useDriveStore = create<DriveState>((set) => ({
   crash: null,
   stopRequested: false,
   jetRequested: false,
+  jumpRequested: false,
+  jump: () => set({ jumpRequested: true }),
   triggerJet: () => set({ jetRequested: true }),
   start: () =>
-    set({ ...EMPTY, active: true, loading: true, warning: null, crash: null, stopRequested: false, jetRequested: false }),
+    set({ ...EMPTY, active: true, loading: true, warning: null, crash: null, stopRequested: false, jetRequested: false, jumpRequested: false }),
   end: () =>
-    set({ active: false, loading: false, paused: false, braking: false, arriving: false, speedMps: 0, warning: null, stopRequested: false, jetRequested: false }),
+    set({ active: false, loading: false, paused: false, braking: false, arriving: false, speedMps: 0, warning: null, stopRequested: false, jetRequested: false, jumpRequested: false }),
   stop: () => set((state) => ({ stopRequested: true, braking: state.speedMps > 0 })),
   togglePause: () => set((state) => state.stopRequested ? {} : ({ paused: !state.paused, braking: !state.paused && state.speedMps > 0 })),
   setSpeed: (speed) => set({ speedMult: Math.max(0.25, Math.min(4, speed)) }),

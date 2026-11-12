@@ -24,6 +24,14 @@ Updated 12 November 2026.
   when found, with explicit unavailable outcomes, elevation profiles and hazards.
 - Rover preview, accelerated simulation, chase and rover cameras, draggable HUDs,
   illustrative crash/CO₂ training, and separation of measured/simulated content.
+- Automatic vehicle selection (robotic rover vs crewed Space Exploration Vehicle)
+  from task flags and terrain, using one shared policy for the route panel and the
+  launch.
+- Three-astronaut SEV crew (Finn, Rae, Fernando) that drives to a terrain-based
+  staging candidate, disembarks, then walks the final approach or holds while the
+  rover is deployed. Idle/walk/jump/jump-land clips use Mars gravity (3.71 m/s²):
+  a slowed gait and a ballistic hop with the exported Earth-style jump root motion
+  locked out.
 - Automated endpoint, geometry, build/lint and browser interaction checks.
 
 ## Competition alignment
@@ -60,4 +68,7 @@ relief and failure training remain labeled simulations.
    environmental/radiation data. Current MOLA resolution is ~1.9 km/pixel;
    rocks, soil traction and small cliffs are unresolved. Crew timing is a scenario
    calculation; validated suit/physiology/consumable models remain future work.
+   Crew disembarkation staging is a regional terrain candidate, not a certified
+   safe/landing or contamination-cleared point, and there is no local obstacle
+   avoidance on the final approach.
 5. Expand device/accessibility testing and production failure/recovery coverage.

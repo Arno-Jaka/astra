@@ -22,9 +22,10 @@ export const WHEEL_CONTACTS = Array.from({ length: 13 }, (_, row) =>
 export function contactLift(
   matrix: Matrix4,
   heightAt: (position: Cartographic) => number | undefined,
+  contacts: readonly Cartesian3[] = WHEEL_CONTACTS,
 ): number {
   let lift = 0
-  for (const contact of WHEEL_CONTACTS) {
+  for (const contact of contacts) {
     const wheel = MARS.cartesianToCartographic(
       Matrix4.multiplyByPoint(matrix, contact, new Cartesian3()),
     )

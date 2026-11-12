@@ -3,6 +3,8 @@ import { useAppStore } from '../store/appStore'
 import type { RouteData, RouteDanger } from '../store/appStore'
 import { useDriveStore } from '../store/driveStore'
 import ElevationProfileChart from './ElevationProfileChart'
+import { assignVehicle } from '../map/taskAssignment'
+import { planCrewMission } from '../map/crewMission'
 
 function stat(value: number, suffix = '') {
   return `${Math.round(value).toLocaleString()}${suffix}`
@@ -32,6 +34,11 @@ export default function RoutePanel({ route }: { route: RouteData }) {
   const selected = hazardous ?? route
   const dangers = hazardous ? hazardous.dangers : (route.dangers ?? [])
   const crew = selected.crew_estimate
+  const assignment = assignVehicle(selected, route.slope_limit_deg, route.crew_estimate?.profile)
+  const completion = useDriveStore(state => state.completion)
+  const missionPhase = useDriveStore(state => state.missionPhase)
+  const crewMessage = useDriveStore(state => state.crewMessage)
+  const mission = planCrewMission(selected, route.slope_limit_deg, assignment.vehicle)
 
   const sample = sampleRoute(selected, previewT)
   const headingDeg = Math.round(
@@ -68,6 +75,17 @@ export default function RoutePanel({ route }: { route: RouteData }) {
               : 'Over limit'}
         </span>
       </header>
+
+      <section aria-label="Task vehicle assignment" className="mt-3 space-y-1 rounded border border-orange-300/25 p-3 text-xs">
+        <h3 className="font-semibold text-orange-200">Assigned: {assignment.label}</h3>
+        <ul className="list-inside list-disc">{assignment.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul>
+        <p>Three-person crew: Finn, Rae &amp; Fernando.</p>
+        <p>{mission.reason}</p>
+        <p className="text-neutral-400">Simulated staging based on regional slopes; local obstacles and contamination clearance are unassessed. Mars gravity: 3.71 m/s². Walking pace uses the crew assumptions; gait timing is illustrative.</p>
+        <p aria-live="polite">Mission: {missionPhase.replaceAll('-', ' ')}{crewMessage ? ` · ${crewMessage}` : ''}</p>
+        {completion === 'arrived' && <p className="text-cyan-200">{assignment.vehicle === 'rover' ? 'Rover reached target; crew remains beside the parked SEV.' : 'All three crew members reached the target area; SEV remains at staging.'}</p>}
+        {completion === 'risk-hold' && <p className="text-amber-200">Mission held. Reassess the route before proceeding.</p>}
+      </section>
 
       {route.hazardous ? (
         <div
@@ -167,7 +185,7 @@ export default function RoutePanel({ route }: { route: RouteData }) {
       </dl>
 
       {crew ? <section aria-label="Crew EVA assessment" className="mt-3 space-y-2 rounded border border-cyan-300/25 p-3 text-xs">
-        <h3 className="font-semibold text-cyan-200">Astronaut science traverse · scenario estimate</h3>
+        <h3 className="font-semibold text-cyan-200">On-foot EVA reference · scenario estimate</h3>
         <p>{crew.profile.objective}</p>
         <p>Destination is a user-selected candidate science station, not a verified outcrop.</p>
         <div className="grid grid-cols-2 gap-2"><p>Outbound: {crew.outbound_hours.toFixed(2)} h</p><p>Return: {crew.return_hours.toFixed(2)} h</p><p>Science: {crew.profile.science_minutes} min</p><p>Reserve: {crew.profile.reserve_minutes} min</p></div>
@@ -197,7 +215,7 @@ export default function RoutePanel({ route }: { route: RouteData }) {
               onClick={() => setRoutePhase('simulating')}
               className="rounded-md border border-cyan-400/40 bg-cyan-400/15 px-2.5 py-1 text-[11px] font-medium text-cyan-200 transition hover:bg-cyan-400/25"
             >
-              ▶ {previewT > 0 && previewT < 1 ? 'Drive from here' : 'Start scout'}
+              ▶ Start crew mission · {assignment.vehicle === 'sev' ? 'crew approach' : 'rover deployment'}
             </button>
           )}
         </div>

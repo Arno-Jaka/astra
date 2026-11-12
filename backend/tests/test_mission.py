@@ -30,7 +30,7 @@ def test_route_alternatives_use_same_crew_snapshot_and_separate_distances():
     result = {"stats": {"distance_km": 3.6}, "coordinates": [], "profile": [], "dangers": [],
               "hazardous": {"distance_km": 1.8}, "slope_compliant": True,
               "note": "Detour", "computed_at": "2026-11-12"}
-    profile = CrewProfile(objective="Boxwork survey")
+    profile = CrewProfile(objective="Boxwork survey", strict_contamination=True, repetitive_work=True)
     with patch("app.dem.plan", return_value=result), patch("app.dem.pixel_size_km", return_value=1.85):
         response = TestClient(app).post("/routes/plan", json={"start_lon": 0, "start_lat": 0,
             "end_lon": 0.1, "end_lat": 0, "crew": profile.model_dump()})

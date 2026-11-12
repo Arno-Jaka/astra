@@ -16,6 +16,15 @@ obstacle-avoiding routes. This document assesses that scope, not event eligibili
 | If possible, route to scientific objectives while avoiding obstacles | Route from a chosen departure point to a candidate science station, with slope-constrained detours when found | MOLA cannot resolve individual rocks or local cliffs; verified outcrop access needs georeferenced high-resolution imagery/DTMs |
 | Consider radiation/space weather | The mission/route assessment explicitly identifies radiation as unassessed | Radiation observations, alerts, dose/exposure integration and validated limits are not implemented |
 
+Beyond that mapping, ASTRA selects between a crewed Space Exploration Vehicle
+(SEV) and a robotic rover: robot-only task criteria (high physical risk, strict
+contamination limits, repetitive work) or hazardous terrain route the rover,
+otherwise the crew drives and disembarks. The SEV stages at a regional terrain
+candidate short of the target; the three-person crew then walks the final
+approach or holds while the rover is deployed. Staging is not a certified
+landing/contamination-clear point, and the robot-only criteria are task policies,
+not validated sterility or contamination models.
+
 ## Science source
 
 [NASA: Curiosity Views Boxwork Patterns at a Distance](https://science.nasa.gov/photojournal/curiosity-views-boxwork-patterns-at-a-distance/)
@@ -46,7 +55,12 @@ An assumption snapshot travels with the route; edits require recalculation.
 3. Show the dated Gale station report (or its honest unavailable state).
 4. Choose a departure point and a candidate science destination; compare routes.
 5. Show how a long slope-compliant route can exceed the crew time budget.
-6. Modify pace/suit allowance/reserve, recalculate, and explain which assessments
+6. Start an SEV crew mission and explain the vehicle choice: the three astronauts
+   disembark at staging and walk the final approach (or hold while the rover is
+   deployed for a robot-only task). Use the Mars-gravity hop; note that staging is
+   a regional terrain candidate, not a certified landing or contamination-clear
+   point.
+7. Modify pace/suit allowance/reserve, recalculate, and explain which assessments
    changed and which hazards remain unmeasured.
 
 Tests cover input validation, round-trip/reserve arithmetic, distinct alternative

@@ -63,6 +63,10 @@ import {
 } from './routePath'
 import { createSlopeOverlayProvider } from './slopeLayer'
 import { contactLift } from './roverContact'
+import { assignVehicle } from './taskAssignment'
+import { vehicleModel } from './vehicleModels'
+import { planCrewMission } from './crewMission'
+import { createSurfaceCrew, type SurfaceCrew } from './surfaceCrew'
 import { advanceDrive, arrivalSpeedLimit } from './driveMotion'
 import { advanceCrash, bodySupport, terrainSupport, type CrashBody } from './crashPhysics'
 import { createDriveSurface } from './driveSurface'
@@ -71,7 +75,6 @@ import { createWheelDust } from './wheelDust'
 import { createMolaTerrainProvider } from './terrain'
 import { MARS, MOLA_SHADE, VIKING, createTrekProvider } from './trek'
 
-const ROVER_URL = '/models/perseverance.glb'
 /** Lift the rover origin (wheel plane) this far above the sampled ground. */
 const ROVER_GROUND_CLEARANCE = 0.03
 /** Cap the terrain-tilt of the rover so LOD seams never flip it on its side. */
@@ -526,6 +529,9 @@ export default function CesiumMap() {
       .catch(() => {})
 
     let scoutModel: Model | null = null
+    let activeVehicleModel = vehicleModel('rover')
+    let surfaceCrew: SurfaceCrew | null = null
+    let parkedSev: Model | null = null
     let scoutFrame = 0
     let scoutToken = 0
     let scoutGrounded = false
@@ -561,7 +567,13 @@ export default function CesiumMap() {
       }
     }
 
-    const removeScout = () => {
+    const removeScout = (preserveCrew = false) => {
+      if (!preserveCrew) {
+        surfaceCrew?.destroy()
+        surfaceCrew = null
+        if (parkedSev && !parkedSev.isDestroyed()) viewer.scene.primitives.remove(parkedSev)
+        parkedSev = null
+      }
       scanSeconds = 0
       roverViewRef.current = null
       wheelDust?.destroy()
@@ -583,9 +595,11 @@ export default function CesiumMap() {
       viewer.entities.removeById('astra-scout')
       useDriveStore.getState().end()
       useDriveStore.getState().crashed(null)
+      useDriveStore.getState().update({ completion: 'idle', missionPhase: 'aboard', crewMessage: '' })
       if (import.meta.env.DEV) {
         delete (globalThis as unknown as Record<string, unknown>).__astraScout
         delete (globalThis as unknown as Record<string, unknown>).__astraChase
+        if (!preserveCrew) delete (globalThis as unknown as Record<string, unknown>).__astraCrew
       }
     }
 
@@ -750,10 +764,25 @@ export default function CesiumMap() {
 
     // Recheck immediately before each Cesium render, including when paused
     // or stopped: tile refinement must not rise through an idle rover.
+    let crewIdleTime = performance.now()
     const removeGrounding = viewer.scene.preRender.addEventListener(() => {
+      const now = performance.now()
+      const controls = useDriveStore.getState()
+      if (surfaceCrew && (!controls.active || controls.missionPhase === 'rover-approach')) {
+        surfaceCrew.update(document.hidden || controls.paused ? 0 : Math.min(0.1, (now - crewIdleTime) / 1000), 0)
+      }
+      crewIdleTime = now
+      if (parkedSev?.ready) {
+        const lift = contactLift(parkedSev.modelMatrix, wheelHeightAt, vehicleModel('sev').contacts)
+        if (lift > 0.001) {
+          const position = Matrix4.getTranslation(parkedSev.modelMatrix, new Cartesian3())
+          const normal = MARS.geodeticSurfaceNormal(position, new Cartesian3())
+          Matrix4.setTranslation(parkedSev.modelMatrix, Cartesian3.add(position, Cartesian3.multiplyByScalar(normal, lift, normal), position), parkedSev.modelMatrix)
+        }
+      }
       if (!scoutGrounded || !scoutModel?.ready) return
       const matrix = scoutModel.modelMatrix
-      const lift = contactLift(matrix, wheelHeightAt)
+      const lift = contactLift(matrix, wheelHeightAt, activeVehicleModel.contacts)
       if (lift <= 0) return
       const position = MARS.cartesianToCartographic(Matrix4.getTranslation(matrix, new Cartesian3()))
       position.height += lift
@@ -1138,8 +1167,9 @@ export default function CesiumMap() {
       }
     }
 
-    const startScout = async (route: RouteData) => {
-      removeScout()
+    const startScout = async (route: RouteData, deploymentT?: number) => {
+      const deploying = deploymentT !== undefined
+      removeScout(deploying)
       scoutGrounded = true
       useDriveStore.getState().start()
       setPreviewMarkerVisible(false)
@@ -1150,7 +1180,21 @@ export default function CesiumMap() {
       const choice = useAppStore.getState().routeChoice
       const hazardous = choice === 'hazardous' ? route.hazardous : null
       const traverse: TraversableRoute = hazardous ?? route
-      const initialT = useAppStore.getState().previewT >= 1 ? 0 : useAppStore.getState().previewT
+      const assignment = assignVehicle(hazardous ?? route, route.slope_limit_deg, route.crew_estimate?.profile)
+      const plan = planCrewMission(hazardous ?? route, route.slope_limit_deg, assignment.vehicle)
+      if (!deploying && !plan.available) {
+        useDriveStore.getState().end()
+        useDriveStore.getState().update({ completion: 'risk-hold', missionPhase: 'hold', crewMessage: plan.reason })
+        useAppStore.getState().setRoutePhase('preview')
+        setPreviewMarkerVisible(true)
+        return
+      }
+      const vehicle = deploying ? 'rover' : 'sev'
+      activeVehicleModel = vehicleModel(vehicle)
+      const cameraScale = activeVehicleModel.cameraScale
+      useDriveStore.getState().update({ vehicle, completion: 'idle', missionPhase: deploying ? 'rover-approach' : 'aboard', crewMessage: plan.reason })
+      const initialT = deploymentT ?? 0
+      const destinationT = deploying ? 1 : plan.stagingT
       const startSample = sampleRoute(traverse, initialT)
       roverViewRef.current = { position: Cartesian3.fromDegrees(startSample.lon, startSample.lat, groundAt(startSample, null), MARS), heading: startSample.bearing, terrainProvider }
       useDriveStore.getState().update({ totalKm: traverse.distance_km })
@@ -1172,7 +1216,7 @@ export default function CesiumMap() {
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
         },
         label: {
-          text: 'Scout · simulated',
+          text: `${deploying ? 'Robotic rover' : 'SEV · crew of 3 aboard'} · simulated`,
           font: '11px sans-serif',
           fillColor: Color.WHITE,
           showBackground: true,
@@ -1191,7 +1235,7 @@ export default function CesiumMap() {
 
       try {
         const model = await Model.fromGltfAsync({
-          url: ROVER_URL,
+          url: activeVehicleModel.url,
           // A fixed physical scale is essential for terrain contact.
           scale: 1,
           modelMatrix: Transforms.eastNorthUpToFixedFrame(
@@ -1218,6 +1262,7 @@ export default function CesiumMap() {
             })
           }
           if (token !== scoutToken) return
+          if (vehicle === 'sev') return // Supplied SEV is static; no rover mast/manipulator clips.
           const deploymentStart = performance.now()
           let deploymentProgress = 0
           try {
@@ -1252,7 +1297,7 @@ export default function CesiumMap() {
         }
         await prepareAnimation()
       } catch (error) {
-        console.warn('Rover model failed to load; using marker only.', error)
+        console.warn(`${assignment.label} model failed to load; using marker only.`, error)
       }
 
       const corridor = await corridorPromise
@@ -1274,7 +1319,7 @@ export default function CesiumMap() {
       const orbit: OrbitState = {
         yaw: 0,
         pitch: ORBIT.defaultPitch,
-        distance: ORBIT.defaultDistance,
+        distance: ORBIT.defaultDistance * cameraScale,
         dragging: false,
       }
       /** Look-at point: mast height above the rover, slightly ahead along
@@ -1286,7 +1331,7 @@ export default function CesiumMap() {
           new Cartesian3(
             Math.sin(heading) * CHASE.aimLeadM,
             Math.cos(heading) * CHASE.aimLeadM,
-            CHASE.aimUpM,
+            activeVehicleModel.aimHeight,
           ),
           new Cartesian3(),
         )
@@ -1352,9 +1397,9 @@ export default function CesiumMap() {
       )
       chaseHandler.setInputAction((delta: number) => {
         orbit.distance = Math.min(
-          ORBIT.maxDistance,
+          ORBIT.maxDistance * cameraScale,
           Math.max(
-            ORBIT.minDistance,
+            ORBIT.minDistance * cameraScale,
             orbit.distance * (delta > 0 ? 1.15 : 0.87),
           ),
         )
@@ -1390,7 +1435,7 @@ export default function CesiumMap() {
         } else if (KEYS.recenter.includes(event.code)) {
           orbit.yaw = 0
           orbit.pitch = ORBIT.defaultPitch
-          orbit.distance = ORBIT.defaultDistance
+          orbit.distance = ORBIT.defaultDistance * cameraScale
         } else if (KEYS.end.includes(event.code)) {
           useDriveStore.getState().stop()
           event.preventDefault()
@@ -1452,13 +1497,15 @@ export default function CesiumMap() {
       }
 
       /** Shared cleanup for both natural completion and an Esc abort. */
-      const endDrive = () => {
+      const endDrive = (completion: 'arrived' | 'stopped' | 'risk-hold' = 'stopped') => {
+        surfaceCrew?.stop()
         wheelDust?.stop()
         scoutFrame = 0
         chaseActive = false
         destroyChaseControls()
         viewer.scene.screenSpaceCameraController.enableInputs = true
         useDriveStore.getState().end()
+        useDriveStore.getState().update({ completion, missionPhase: completion === 'arrived' ? 'complete' : 'hold' })
         // Keep the preview marker where the drive stopped. Syncing
         // subscribedPreviewT stops the store subscription from treating
         // this as a scrub event and flying the camera away.
@@ -1467,6 +1514,67 @@ export default function CesiumMap() {
         store.setPreviewT(lastT)
         store.setRoutePhase('preview')
         setPreviewMarkerVisible(true)
+      }
+
+      const handoff = async () => {
+        wheelDust?.stop()
+        useDriveStore.getState().update({ missionPhase: 'disembarking', loading: true, speedMps: 0, arriving: false })
+        try {
+          const crew = await createSurfaceCrew(viewer, traverse, plan.stagingT,
+            sample => groundAt(sample, corridor), () => token !== scoutToken)
+          if (token !== scoutToken || !crew) { crew?.destroy(); return }
+          surfaceCrew = crew
+          if (import.meta.env.DEV) (globalThis as unknown as Record<string, unknown>).__astraCrew = crew
+        } catch (error) {
+          if (token !== scoutToken) return
+          console.error('Crew model loading failed', error)
+          useDriveStore.getState().update({ crewMessage: 'Crew models could not load. Mission held at staging; retry to reload.' })
+          endDrive('risk-hold')
+          return
+        }
+        useDriveStore.getState().update({ loading: false })
+        let previous = performance.now()
+        const crewStep = (now: number) => {
+          if (token !== scoutToken || !surfaceCrew) return
+          const controls = useDriveStore.getState()
+          const dt = document.hidden || controls.paused ? 0 : Math.min(0.1, (now - previous) / 1000) * controls.speedMult
+          previous = now
+          if (controls.stopRequested) { endDrive(); return }
+          if (controls.jumpRequested) { surfaceCrew.jump(); useDriveStore.setState({ jumpRequested: false }) }
+          const profile = route.crew_estimate?.profile
+          const pace = (profile?.pace_m_s ?? 0.5) / (1 + (profile?.mobility_allowance_pct ?? 50) / 100)
+          surfaceCrew.update(dt, pace)
+          if (surfaceCrew.mode === 'hold') {
+            if (assignment.vehicle === 'rover') {
+              // Preserve the parked carrier and three crew members during rover launch.
+              parkedSev = scoutModel
+              scoutModel = null
+              void startScout(route, plan.stagingT)
+              return
+            }
+            surfaceCrew.walk()
+            useDriveStore.getState().update({ missionPhase: 'crew-approach' })
+          }
+          lastT = surfaceCrew.fraction
+          const sample = sampleRoute(traverse, lastT)
+          const ground = groundAt(sample, corridor)
+          // Stop the final approach if newly rendered terrain exceeds the crew limit.
+          const ahead = sampleRoute(traverse, Math.min(1, lastT + 0.001 / Math.max(totalKm, 0.001)))
+          const grade = Math.abs(CesiumMath.toDegrees(Math.atan2(groundAt(ahead, corridor) - ground,
+            Math.max(0.01, (ahead.distanceKm - sample.distanceKm) * 1000))))
+          if (surfaceCrew.mode === 'walk' && (Math.abs(sample.gradeDeg) > route.slope_limit_deg || grade > route.slope_limit_deg)) {
+            useDriveStore.getState().update({ crewMessage: 'Crew held: final-approach grade exceeds the mission limit.' })
+            endDrive('risk-hold')
+            return
+          }
+          bearing = sample.bearing
+          updateChaseCamera(sample, ground, Math.max(0.001, dt))
+          useDriveStore.getState().update({ distanceKm: sample.distanceKm, speedMps: controls.paused ? 0 : surfaceCrew.mode === 'walk' ? pace : 0, timeScale: 1 })
+          useAppStore.getState().setPreviewT(lastT)
+          if (surfaceCrew.mode === 'complete') { endDrive('arrived'); return }
+          scoutFrame = requestAnimationFrame(crewStep)
+        }
+        scoutFrame = requestAnimationFrame(crewStep)
       }
 
       useDriveStore.getState().update({
@@ -1634,22 +1742,22 @@ export default function CesiumMap() {
         ))
         const gradeFactor = 1 / (1 + Math.max(Math.abs(ahead.gradeDeg), Math.abs(localGrade)) / 8)
         const turn = Math.abs(wrapPi(ahead.bearing - bearing))
-        const remainingM = Math.max(0, totalKm * 1000 - distanceM)
+        const remainingM = Math.max(0, destinationT * totalKm * 1000 - distanceM)
         const targetSpeed = wantsHalt ? 0 : Math.min(
           SCOUT_CRUISE_MPS * gradeFactor / (1 + turn * 3),
           arrivalSpeedLimit(remainingM, timeScale * speedMult, velocityMps, wallDt),
         )
         const motion = advanceDrive(velocityMps, targetSpeed, wallDt)
         velocityMps = motion.speed
-        distanceM = Math.min(totalKm * 1000, distanceM + motion.distance * timeScale * speedMult)
-        if (!wantsHalt && remainingM < 0.01) distanceM = totalKm * 1000
+        distanceM = Math.min(destinationT * totalKm * 1000, distanceM + motion.distance * timeScale * speedMult)
+        if (!wantsHalt && remainingM < 0.01) distanceM = destinationT * totalKm * 1000
         const braking = wantsHalt && velocityMps > 0
         if (braking !== controls.braking) useDriveStore.getState().update({ braking })
         const t = totalKm > 0 ? distanceM / (totalKm * 1000) : 1
         lastT = t
         const sample = sampleRoute(traverse, t)
         const ground = groundAt(sample, corridor)
-        if (controls.jetRequested) {
+        if (controls.jetRequested && vehicle === 'rover') {
           beginCrash('jet', sample)
           scoutFrame = requestAnimationFrame(step)
           return
@@ -1716,7 +1824,7 @@ export default function CesiumMap() {
           // Dense contact envelope from the GLB's actual wheel bounds. Apply
           // collision correction AFTER tilt/suspension, so a lagging body
           // normal cannot push the uphill wheels through a ridge.
-          const lift = contactLift(matrix, wheelHeightAt)
+          const lift = contactLift(matrix, wheelHeightAt, activeVehicleModel.contacts)
           if (lift > 0) {
             rideHeight += lift
             bodyHeight = Math.max(bodyHeight, rideHeight)
@@ -1784,6 +1892,10 @@ export default function CesiumMap() {
         // Crash triggers: beginCrash reports the failure and takes over the
         // loop — stepCrash owns every frame from the next one on.
         const absGrade = Math.abs(sample.gradeDeg)
+        if (vehicle === 'sev' && absGrade >= rolloverGradeDeg) {
+          endDrive('risk-hold')
+          return
+        }
         if (absGrade >= CRASH.fallGradeDeg) {
           beginCrash('fall', sample)
           scoutFrame = requestAnimationFrame(step)
@@ -1794,10 +1906,14 @@ export default function CesiumMap() {
           scoutFrame = requestAnimationFrame(step)
           return
         }
-        if (t < 1) {
+        // Arrival is judged on distance, not on the recomputed fraction:
+        // destinationT * totalKm * 1000 can fail to round-trip through
+        // distanceM / (totalKm * 1000), leaving `t < destinationT` true forever.
+        if (remainingM > 0.01 || wantsHalt) {
           scoutFrame = requestAnimationFrame(step)
         } else {
-          endDrive()
+          if (deploying) endDrive('arrived')
+          else void handoff()
         }
       }
       scoutFrame = requestAnimationFrame(step)
@@ -2075,8 +2191,16 @@ export default function CesiumMap() {
     // React to the traverse preview scrubber and the simulation play button.
     let subscribedPhase: RoutePhase = 'idle'
     let subscribedPreviewT = 0
+    let subscribedRoute = useAppStore.getState().route
+    let subscribedChoice = useAppStore.getState().routeChoice
     const unsubscribeStore = useAppStore.subscribe((state) => {
       const route = state.route
+      if (route !== subscribedRoute || state.routeChoice !== subscribedChoice) {
+        subscribedRoute = route
+        subscribedChoice = state.routeChoice
+        removeScout()
+      }
+      if (!route) subscribedPhase = 'idle'
       if (!route || viewer.isDestroyed()) return
       if (state.routePhase !== subscribedPhase) {
         const previous = subscribedPhase

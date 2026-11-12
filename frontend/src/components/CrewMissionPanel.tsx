@@ -7,7 +7,7 @@ import { dispatchLocalCommand } from '../ws/commandChannel'
 
 type Mission = { title: string; summary: string; tasks: string[]; source_url: string; image_url: string; image_credit: string; region: { lon: number; lat: number }; location_note: string }
 type Weather = { sol: string | number; terrestrial_date: string | null; min_temp_c: number | null; max_temp_c: number | null; pressure_pa: number | null; source_url: string }
-const fields: { key: keyof Omit<CrewProfile, 'objective'>; label: string; min: number; max: number; step: number }[] = [
+const fields: { key: keyof Omit<CrewProfile, 'objective' | 'high_physical_risk' | 'strict_contamination' | 'repetitive_work'>; label: string; min: number; max: number; step: number }[] = [
   { key: 'pace_m_s', label: 'Assumed walking pace (m/s)', min: 0.1, max: 2, step: 0.1 },
   { key: 'mobility_allowance_pct', label: 'Suit/equipment extra travel time (%)', min: 0, max: 300, step: 10 },
   { key: 'science_minutes', label: 'Science stop (minutes)', min: 0, max: 480, step: 5 },
@@ -80,6 +80,12 @@ export default function CrewMissionPanel() {
       <section className="space-y-2 border-t border-white/10 pt-3">
         <h3 className="font-semibold">Crew traverse assumptions</h3>
         <label className="block">Science objective<textarea aria-label="Science objective" maxLength={200} value={crew.objective} onChange={e => update('objective', e.target.value)} className="mt-1 w-full rounded bg-neutral-800 p-2" /></label>
+        <fieldset className="space-y-2 rounded border border-white/15 p-2">
+          <legend className="px-1 font-medium">Automatic task vehicle</legend>
+          {([['high_physical_risk', 'High physical risk'], ['strict_contamination', 'Strict contamination limits'], ['repetitive_work', 'Tedious / repetitive work']] as const).map(([key, label]) => <label key={key} className="flex gap-2"><input type="checkbox" checked={crew[key]} onChange={e => update(key, e.target.checked)} />{label}</label>)}
+          <p className="text-neutral-400">Any checked condition, or a severe/over-limit route hazard, assigns the rover. Otherwise use the Space Exploration Vehicle. Recalculate after changes.</p>
+          <p className="text-neutral-400">Three astronauts travel aboard the SEV, exit at a terrain-based staging candidate, then approach on foot or hold while the rover deploys. Contamination is a task constraint, not a claim that the rover is sterile.</p>
+        </fieldset>
         <p className="text-neutral-400">Start = departure/return point; destination = candidate science station. Defaults are illustrative scenario inputs, not NASA suit limits.</p>
         <label className="flex items-center justify-between gap-2">Maximum regional slope (°)<input aria-label="Crew slope limit" type="number" min={1} max={45} value={slope} onChange={e => { const value = Number(e.target.value); if (value >= 1 && value <= 45) setSlope(value) }} className="w-16 rounded bg-neutral-800 p-1" /></label>
         {fields.map(f => <label key={f.key} className="flex items-center justify-between gap-2">{f.label}<input aria-label={f.label} type="number" min={f.min} max={f.max} step={f.step} value={crew[f.key]} onChange={e => { const value = Number(e.target.value); if (Number.isFinite(value) && value >= f.min && value <= f.max) update(f.key, value) }} className="w-16 rounded bg-neutral-800 p-1" /></label>)}

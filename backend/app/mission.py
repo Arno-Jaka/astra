@@ -25,6 +25,9 @@ class CrewProfile(BaseModel):
     science_minutes: float = Field(default=45, ge=0, le=480)
     reserve_minutes: float = Field(default=60, ge=0, le=480)
     budget_hours: float = Field(default=6, ge=0.5, le=24)
+    high_physical_risk: bool = False
+    strict_contamination: bool = False
+    repetitive_work: bool = False
 
 
 def crew_estimate(distance_km: float, profile: CrewProfile) -> dict:

@@ -124,6 +124,13 @@ profile. Replies are spoken with a neural voice.
   and since combustion cannot happen in Mars' thin CO₂ atmosphere the
   wreck is shown as electrical discharge from its power bus rather
   than fire.
+- **Vehicle selection and crew mission** — ASTRA picks the robotic rover for
+  robot-only tasks (high physical risk, strict contamination limits, repetitive
+  work) or hazardous terrain, and the crewed Space Exploration Vehicle (SEV)
+  otherwise. An SEV traverse stages short of the target, three astronauts
+  (Finn, Rae, Fernando) disembark, and they either walk the final approach or
+  hold while the rover is deployed. Walking and jumping follow Mars gravity
+  (3.71 m/s²).
 - **Layers** — a layer panel toggles NASA base imagery (MOLA hillshade or
   Viking MDIM 2.1) and a **slope-hazard overlay** (green→red at
   5/10/15/25°) computed server-side from the MOLA DEM, plus the 21 gazetteer
@@ -175,6 +182,8 @@ rocker-bogie or tire/soil dynamics solver; basemap imagery remains low resolutio
 Verification: `cd frontend && node scripts/verify-rover-contact.mjs`.
 Motion checks: `cd frontend && node scripts/verify-drive-motion.mjs`.
 Crash checks: `cd frontend && node scripts/verify-crash-physics.mjs`.
+Crew/vehicle checks: `cd frontend && node scripts/verify-crew-mission.mjs` and
+`node scripts/verify-task-assignment.mjs`.
 
 ### Crew display and failure training
 
@@ -204,6 +213,37 @@ Crash checks: `cd frontend && node scripts/verify-crash-physics.mjs`.
 These simulation aids support the challenge's mission-planning objective;
 measured imagery/topography/weather, curated interpretation, and hypothetical
 failure training remain explicitly distinguished.
+
+### Vehicle selection and surface crew
+
+Before launch, ASTRA assigns a vehicle from the route and the task profile
+(`frontend/src/map/taskAssignment.ts`). The **robotic rover** is used when the
+task carries a flagged constraint — high physical risk, strict contamination
+limits, or repetitive work that would waste crew time — or when the route is not
+slope-compliant, exceeds the grade limit, or is marked over-limit / rollover /
+cliff. Otherwise the **Space Exploration Vehicle (SEV)** carries the crew. The
+route panel names the choice and the reason.
+
+For an SEV traverse the mission is staged. The SEV drives to a terrain-based
+**staging candidate** short of the target, three astronauts disembark, and they
+either **walk the final approach** on foot (when no robot-only criterion applies)
+or **hold beside the parked SEV** while the rover is deployed to the target (when
+the task is unsuitable for crew).
+
+Staging is a regional terrain candidate, never a certified landing or
+contamination-cleared point: the plan rejects missing terrain, never carries the
+SEV through a known hazard, and keeps the crew aboard if no candidate exists. The
+crew's final approach halts and reports if newly rendered terrain exceeds the
+mission grade limit.
+
+The supplied astronaut rigs play `Idle`, `Walk`, `Jump`, `Jump_Idle` and
+`Jump_Land`. Mars gravity (3.71 m/s²) drives both cues: the walk cadence is
+slowed by √(3.71/9.81) relative to Earth, and a hop follows a ballistic arc
+(`2·v₀/g`, v₀ = 1.4 m/s, ≈ 0.75 s aloft) with the exported Earth-style jump root
+motion locked out so only one vertical impulse is applied. Use the HUD's
+**Crew hop · Mars gravity** button during the final approach. The rigs, walk
+cadence and jump are illustrative; suits, physiology and consumables are not
+modelled.
 
 ## Stack
 
@@ -296,11 +336,16 @@ Open `http://localhost:5173`. Vite proxies `/api` and `/ws` to port 8000.
    a "scout lost" report that recovers onto the safe route. (On the safe
    route it completes without incident; a 15° Gale→Sharp request puts the
    rollover about 0.5 km in.)
-5. **Layers** — switch base imagery to Viking MDIM; toggle the slope-hazard
+5. **Crew mission** — with a task that has no robot-only criterion, start the
+   SEV mission: the three astronauts drive to the staging point, disembark, and
+   walk the final approach; use **Crew hop · Mars gravity** to see the slowed
+   Mars-gravity gait and ballistic hop. Flag a robot-only task (for example
+   repetitive work) to see the crew hold while the rover performs the approach.
+6. **Layers** — switch base imagery to Viking MDIM; toggle the slope-hazard
    overlay and read the color legend; note the live REMS station pin at
    Bradbury Landing.
-6. **Voice** — toggle **Voice** in the chat header; the mic button transcribes.
-7. **Jezero** — "What is the weather at Jezero?" — no fly, nearest-station
+7. **Voice** — toggle **Voice** in the chat header; the mic button transcribes.
+8. **Jezero** — "What is the weather at Jezero?" — no fly, nearest-station
    labeling, Octavia E. Butler Landing marker via the briefing.
 
 ## Data and provenance
@@ -315,6 +360,8 @@ retrieved_at}` from the backend. Key sources:
   one real NASA DEM.
 - Perseverance rover model — NASA 3D Resources (illustrative scout, not a
   drive simulation).
+- Space Exploration Vehicle and astronaut character models — user-supplied
+  illustrative assets (not NASA measurements).
 - REMS weather — Curiosity, NASA/JPL (outreach purposes only).
 - Mission overviews — NASA Science (MSL, Mars 2020).
 - Landing site names — IAU / USGS Gazetteer of Planetary Nomenclature.
@@ -355,6 +402,10 @@ computes measurements.
   is shown arcing electrically instead of burning.
 - Meter-scale ridges and potholes in the close-up simulation are synthetic;
   a HiRISE/CTX DTM overlay would be needed for measured meter-scale terrain.
+- The astronaut crew, disembarkation staging and Mars-gravity gait are
+  illustrative: staging is a regional MOLA candidate, not a certified landing or
+  contamination-cleared point, and suit physiology, consumables, local obstacle
+  avoidance and validated radiation assessment are not modelled.
 
 ## Checks
 

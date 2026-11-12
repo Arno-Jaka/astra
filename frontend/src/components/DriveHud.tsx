@@ -4,6 +4,11 @@ import FloatingPanel from './FloatingPanel'
 /** Game-style driving telemetry bar shown while the scout simulation runs. */
 export default function DriveHud() {
   const active = useDriveStore((state) => state.active)
+  const vehicle = useDriveStore(state => state.vehicle)
+  const missionPhase = useDriveStore(state => state.missionPhase)
+  const onFoot = missionPhase === 'crew-approach' || missionPhase === 'disembarking'
+  const jump = useDriveStore(state => state.jump)
+  const vehicleName = onFoot ? 'Crew of 3 · Mars surface' : vehicle === 'sev' ? 'Space Exploration Vehicle' : 'Robotic rover'
   const distanceKm = useDriveStore((state) => state.distanceKm)
   const totalKm = useDriveStore((state) => state.totalKm)
   const gradeDeg = useDriveStore((state) => state.gradeDeg)
@@ -31,7 +36,7 @@ export default function DriveHud() {
   const progress = totalKm > 0 ? Math.min(100, (distanceKm / totalKm) * 100) : 0
 
   return (
-    <FloatingPanel id="drive" title="Autonomous rover" width={600} initial={{ left: 'calc(50% - 300px)', bottom: 20 }}>
+    <FloatingPanel id="drive" title={vehicleName} width={600} initial={{ left: 'calc(50% - 300px)', bottom: 20 }}>
     <div className="p-2 text-sm [&_p]:text-xs [&_select]:text-sm [&_button]:text-sm">
       {crash ? (
         <div className="mb-1.5 rounded-lg border border-red-500/50 bg-red-950/85 px-3 py-2 text-center text-[11px] font-medium text-red-200 shadow-2xl backdrop-blur-xl">
@@ -48,8 +53,9 @@ export default function DriveHud() {
       ) : null}
       <div className="rounded-xl border border-white/10 bg-black/65 px-4 py-2.5 shadow-2xl backdrop-blur-xl">
         <p className="mb-2 text-[10px] uppercase tracking-widest text-cyan-200" role="status">
-          {loading ? 'Preparing terrain & rover…' : crash ? 'Scout failure · simulated dynamics' : braking ? stopping ? 'Braking · ending traverse' : 'Braking · pausing' : paused ? 'Autonomous scout · paused' : arriving ? 'Approaching destination · decelerating' : 'Autonomous scout · following route'}
+          {loading ? `Preparing terrain & ${vehicleName}…` : crash ? 'Rover failure · simulated dynamics' : braking ? stopping ? 'Braking · ending traverse' : 'Braking · pausing' : paused ? `${vehicleName} · paused` : arriving ? 'Approaching destination · decelerating' : `${vehicleName} · following route`}
         </p>
+        <p className="mb-2 text-cyan-200">{missionPhase === 'aboard' ? '3 crew aboard · driving to staging' : missionPhase === 'disembarking' ? 'Finn, Rae & Fernando · exiting SEV' : missionPhase === 'crew-approach' ? 'Crew final approach · SEV parked' : missionPhase === 'rover-approach' ? 'Rover deployed · 3 crew hold at SEV' : missionPhase}</p>
         <div className="flex items-baseline justify-between font-mono text-sm tabular-nums text-neutral-200">
           <span>
             {distanceKm.toFixed(3)}
@@ -103,11 +109,12 @@ export default function DriveHud() {
         </div>
         <div className="pointer-events-auto mt-3 flex items-center gap-2 text-[11px] text-neutral-300">
           <label htmlFor="scout-travel-mode">Travel</label>
-          <select id="scout-travel-mode" value={travelMode} disabled={loading || braking || stopping || !!crash} onChange={(event) => setTravelMode(event.target.value as 'preview' | 'realtime')} className="min-w-0 flex-1 rounded bg-neutral-900 p-1.5">
+          <select id="scout-travel-mode" value={travelMode} disabled={onFoot || loading || braking || stopping || !!crash} onChange={(event) => setTravelMode(event.target.value as 'preview' | 'realtime')} className="min-w-0 flex-1 rounded bg-neutral-900 p-1.5">
             <option value="preview">Fast traverse · time-compressed</option>
             <option value="realtime">Real-time · close terrain inspection</option>
           </select>
         </div>
+        {missionPhase === 'crew-approach' && <button type="button" onClick={jump} disabled={paused || stopping} className="mt-2 rounded border border-cyan-300/40 px-3 py-1.5 text-cyan-200 disabled:opacity-40">Crew hop · Mars gravity</button>}
         <div className="pointer-events-auto mt-2 flex items-center justify-between gap-2 text-[11px]">
           <button type="button" onClick={togglePause} disabled={loading || stopping || !!crash} className="rounded border border-white/20 px-3 py-1.5 text-white disabled:opacity-40">
             {paused ? 'Resume' : 'Pause'}
@@ -120,12 +127,12 @@ export default function DriveHud() {
           </label>
           <button type="button" onClick={stop} disabled={stopping} className="rounded border border-amber-300/40 px-3 py-1.5 text-amber-200 disabled:opacity-50">{stopping ? 'Stopping…' : 'Stop'}</button>
         </div>
-        <details className="pointer-events-auto mt-3 border-t border-white/10 pt-2 text-xs text-neutral-400">
+        {vehicle === 'rover' && <details className="pointer-events-auto mt-3 border-t border-white/10 pt-2 text-xs text-neutral-400">
           <summary className="cursor-pointer">Optional hazard training · CO₂ jet</summary>
           <p className="mt-2">NASA observes seasonal CO₂ jets at the south pole. No jets are identified along this route. The launch impulse and vehicle response below are hypothetical training.</p>
           <a href="https://images.nasa.gov/details/PIA22587" target="_blank" rel="noreferrer" className="text-cyan-300 underline">NASA MRO / HiRISE · PIA22587</a>
           <button type="button" disabled={loading || !!crash || stopping} onClick={triggerJet} className="ml-3 rounded border border-amber-400/40 px-3 py-2 text-amber-200 disabled:opacity-40">Trigger jet drill</button>
-        </details>
+        </details>}
         <p className="mt-2 text-[9px] text-neutral-400">NASA MOLA hills · illustrative texture, dust, trails & vehicle dynamics</p>
       </div>
       <p className="mt-1 text-center text-[9px] uppercase tracking-[0.18em] text-neutral-500">

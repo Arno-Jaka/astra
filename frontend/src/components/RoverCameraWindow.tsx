@@ -8,6 +8,7 @@ export type RoverViewPose = { position: Cartesian3; heading: number; terrainProv
 
 export default function RoverCameraWindow({ poseRef }: { poseRef: RefObject<RoverViewPose | null> }) {
   const active = useDriveStore(state => state.active)
+  const vehicle = useDriveStore(state => state.vehicle)
   const container = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!active || !container.current) return
@@ -41,7 +42,7 @@ export default function RoverCameraWindow({ poseRef }: { poseRef: RefObject<Rove
     return () => { cancelAnimationFrame(frame); viewer.destroy() }
   }, [active, poseRef])
   if (!active) return null
-  return <FloatingPanel id="rover-camera" title="Rover mast camera" width={360} initial={{ left: 16, top: 120 }}>
+  return <FloatingPanel id="rover-camera" title={vehicle === 'sev' ? 'SEV forward camera' : 'Rover mast camera'} width={360} initial={{ left: 16, top: 120 }}>
     <div ref={container} className="h-[210px] w-full bg-black" />
     <p className="px-3 py-2 text-xs text-neutral-400">Simulated forward view · NASA terrain / imagery · 10 fps</p>
   </FloatingPanel>
