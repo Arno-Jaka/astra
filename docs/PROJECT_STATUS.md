@@ -51,6 +51,17 @@ Updated 13 November 2026.
   surface average (~0.64 mSv/day) by latitude and regional elevation and is
   explicitly labelled derived — not a measured dose map, dust forecast or
   certified EVA assessment. Terrain/slope safety remains the route planner's job.
+- Dynamic simulated surface weather (illustrative): a separate visual layer
+  cycles invented events every 14–28 s — sandstorm walls, a dust tornado,
+  electrostatic dry lightning, CO₂ ice squalls and ice fog, with calm gaps.
+  Particles, screen wash, wind lean and a dust/ice colour wash act on the rover,
+  SEV and crew. A safe focused region biases the sequence calmer; an unsafe region
+  pushes it toward storms, tornadoes and lightning. The panel shows event
+  intensity, illustrative wind/dust/visibility and Next weather / Auto-cycle
+  controls. These effects are invented visualizations, not a forecast, measured
+  dust value or certified EVA weather limit; “rain” is CO₂ ice, not liquid water.
+  The layer stays separate from the derived weather/radiation screening and the
+  route planner.
 - Automated endpoint, geometry, build/lint and browser interaction checks.
 
 ## Competition alignment
@@ -72,8 +83,10 @@ For presentation, describe MOLA routes as **regional slope-based estimates**, no
 certified safe rover navigation or proof of the globally safest route. Context
 bearings are derived from sourced site coordinates. Only Gale has a REMS station
 feed here; other locations do not have local live weather. The weather/radiation
-panel is a derived regional screening, not measured dose or storm data. Synthetic
-small-scale relief and failure training remain labeled simulations.
+panel is a derived regional screening, not measured dose or storm data. The
+dynamic surface-weather events are invented visual effects, not measured
+atmosphere, forecasts or EVA limits. Synthetic small-scale relief and failure
+training remain labeled simulations.
 
 ## Remaining work
 
@@ -88,7 +101,8 @@ small-scale relief and failure training remain labeled simulations.
 4. Scientific upgrades: georeferenced boxwork observation stations and measured
    HiRISE/CTX terrain for local obstacles, broader site coverage, and spatial
    environmental/radiation observations. The regional screening is derived and
-   illustrative; measured dose maps, dust-storm forecasting and validated EVA
+   illustrative, and the visible surface-weather layer is invented rather than
+   measured; measured dose maps, real dust-storm forecasting and validated EVA
    limits remain future work. Current MOLA resolution is ~1.9 km/pixel;
    rocks, soil traction and small cliffs are unresolved. Crew timing is a scenario
    calculation; validated suit/physiology/consumable models remain future work.

@@ -14,14 +14,18 @@ obstacle-avoiding routes. This document assesses that scope, not event eligibili
 | Prioritize crew safety | Slope-compliance comparison, danger annotations, regional weather/radiation screening (safe/caution/unsafe), round-trip time allocation and reserve, explicit unknown hazards | Regional slope assessment, derived screening and assumed time feasibility are not evidence of overall safety |
 | Account for suits/equipment and science tasks | User-assumed walking pace and additional suit/kit travel-time percentage; science stop; return reserve; EVA budget | No empirical mass-to-metabolism model, oxygen calculation or certified suit envelope |
 | If possible, route to scientific objectives while avoiding obstacles | Route from a chosen departure point to a candidate science station, with slope-constrained detours when found | MOLA cannot resolve individual rocks or local cliffs; verified outcrop access needs georeferenced high-resolution imagery/DTMs |
-| Consider radiation/space weather | Regional weather + radiation screening classifies 21 mapped zones **safe / caution / unsafe**, with scenic character and science value, plus estimated temperature range, dust index and surface dose | Derived from published planetary ranges and latitude/regional elevation; not a measured dose map, dust forecast or space-weather alert service, and not validated exposure limits |
+| Consider radiation/space weather | Regional weather + radiation screening classifies 21 mapped zones **safe / caution / unsafe**, with scenic character and science value, plus estimated temperature range, dust index and surface dose, and a separate dynamic simulated surface-weather layer | Screening is derived from published planetary ranges and latitude/regional elevation; not a measured dose map or dust forecast. The dynamic weather (sandstorms, dust tornado, electrostatic lightning, CO₂ ice squalls, ice fog) is invented visual FX, not a measured atmosphere, forecast or space-weather alert service, and neither view is validated exposure limits |
 
 The weather/radiation screening is deliberately an **illustrative regional
 screening**, not a certified EVA assessment. Per-zone estimates are derived from
 latitude and approximate regional elevation, anchored to published ranges such
 as the Curiosity RAD surface average (~0.64 mSv/day); they are not measured dose
 or dust values for a spot. Terrain and slope safety are assessed separately by
-the route planner so the two risk views are not conflated.
+the route planner so the two risk views are not conflated. A separate dynamic
+surface-weather layer adds visible, invented events (sandstorm walls, a dust
+tornado, electrostatic lightning, CO₂ ice squalls, ice fog) to the 3D assets; it
+is deliberately illustrative, not a forecast or a measured atmosphere, and it is
+kept distinct from the screening numbers.
 
 Beyond that mapping, ASTRA selects between a crewed Space Exploration Vehicle
 (SEV) and a robotic rover from destination safety and robot-only task criteria

@@ -1,7 +1,8 @@
-import { Cartesian3, HeadingPitchRoll, Matrix4, Model, ModelAnimationLoop, Transforms, type Viewer } from 'cesium'
+import { Cartesian3, Color, ColorBlendMode, HeadingPitchRoll, Matrix4, Model, ModelAnimationLoop, Transforms, type Viewer } from 'cesium'
 import { MARS } from './trek'
 import { approachSpeedMps, CREW_FORWARD_HEADING_OFFSET, HOP_GROUND_FACTOR, HOP_SPEED_FACTOR, JUMP_DURATION, jumpHeight, MARS_GAIT_RATE } from './crewMission'
 import { sampleRoute, totalDistanceKm, type RouteSample, type TraversableRoute } from './routePath'
+import type { WeatherTint } from '../store/weatherEngine'
 
 export const CREW_ASSETS = [
   { name: 'Finn', url: new URL('../3D _assets/Astronaut_FinnTheFrog.gltf', import.meta.url).href },
@@ -80,6 +81,10 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
   let stopped = false
   let leadProgress = 0
   let mode: 'exit' | 'hold' | 'walk' | 'complete' = 'exit'
+  // Simulated-weather response: body roll in the wind and a dust/ice wash.
+  let weatherRoll = 0
+  let weatherTintAmount = 0
+  const weatherColor = new Color(1, 1, 1, 1)
   const total = totalDistanceKm(route)
   const spanM = Math.max(1e-6, (1 - stagingT) * total * 1000)
   // Presentation speed: the on-screen final approach covers the span in
@@ -120,7 +125,7 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
     // so CREW_FORWARD_HEADING_OFFSET aims the body's forward axis along the
     // direction of travel (verified against joint world positions).
     member.model.modelMatrix = Transforms.headingPitchRollToFixedFrame(
-      Cartesian3.fromDegrees(lon, lat, ground + 0.04 + height, MARS), new HeadingPitchRoll(sample.bearing + CREW_FORWARD_HEADING_OFFSET, 0, 0), MARS)
+      Cartesian3.fromDegrees(lon, lat, ground + 0.04 + height + Math.abs(weatherRoll) * 0.45, MARS), new HeadingPitchRoll(sample.bearing + CREW_FORWARD_HEADING_OFFSET, 0, weatherRoll), MARS)
   }
   return {
     members,
@@ -130,6 +135,15 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
     /** Visual speed of the on-screen final approach (m/s). */
     get speedMps() { return approachSpeed },
     stop() { stopped = true; for (const member of members) member.hop = -1 },
+    /** Wind lean (body roll, radians) and dust/ice colour wash from the
+     *  simulated weather layer. Applied to every crew member's pose. */
+    setWeather(rollRad: number, tint: WeatherTint) {
+      weatherRoll = rollRad
+      weatherTintAmount = tint.amount
+      weatherColor.red = tint.color[0]
+      weatherColor.green = tint.color[1]
+      weatherColor.blue = tint.color[2]
+    },
     walk() { mode = 'walk' },
     jump() {
       if (mode !== 'walk' && mode !== 'hold' && mode !== 'complete') return
@@ -137,6 +151,11 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
     },
     update(dt: number, pace: number) {
       if (disposed || members.some(m => !m.model.ready)) return
+      for (const member of members) {
+        member.model.colorBlendMode = ColorBlendMode.MIX
+        member.model.color = weatherColor
+        member.model.colorBlendAmount = weatherTintAmount
+      }
       if (!stopped) elapsed += dt
       if (!stopped && mode === 'walk') {
         for (const member of members) {

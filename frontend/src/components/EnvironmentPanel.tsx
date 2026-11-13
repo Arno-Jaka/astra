@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   ENVIRONMENT_CHIP,
   ENVIRONMENT_COLORS,
@@ -10,6 +10,15 @@ import {
   type EnvironmentLevel,
   type EnvironmentZone,
 } from '../store/environmentStore'
+import {
+  weatherDustIndex,
+  weatherIntensity,
+  weatherLeanRad,
+  weatherTint,
+  weatherWindMps,
+  WEATHER_PROFILES,
+} from '../store/weatherEngine'
+import { useWeatherStore, weatherElapsedS } from '../store/weatherStore'
 
 function Chip({ level }: { level: EnvironmentLevel }) {
   return (
@@ -138,6 +147,130 @@ function SelectedZone({ zone }: { zone: EnvironmentZone }) {
 }
 
 /**
+ * Visible simulated-weather controls. The event list is invented and the
+ * numbers are illustrative: this is not a dust forecast or measured weather.
+ */
+function SimulatedWeatherCard() {
+  const kind = useWeatherStore((state) => state.kind)
+  const startedAt = useWeatherStore((state) => state.startedAt)
+  const auto = useWeatherStore((state) => state.auto)
+  const focusId = useWeatherStore((state) => state.focusId)
+  const classification = useWeatherStore((state) => state.classification)
+  const next = useWeatherStore((state) => state.next)
+  const setAuto = useWeatherStore((state) => state.setAuto)
+  const tick = useWeatherStore((state) => state.tick)
+  const zones = useEnvironmentStore((state) => state.zones)
+  const [now, setNow] = useState(() => performance.now())
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const stamp = performance.now()
+      tick(stamp)
+      setNow(stamp)
+    }, 250)
+    return () => window.clearInterval(timer)
+  }, [tick])
+
+  const profile = WEATHER_PROFILES[kind]
+  const elapsed = weatherElapsedS(startedAt, now)
+  const intensity = weatherIntensity(kind, elapsed)
+  const wind = weatherWindMps(kind, elapsed)
+  const dust = weatherDustIndex(kind, elapsed)
+  const lean = weatherLeanRad(kind, elapsed)
+  const tint = weatherTint(kind, elapsed)
+  const progress = Math.min(1, elapsed / profile.durationS)
+  const visibility = kind === 'clear'
+    ? profile.visibilityM
+    : profile.visibilityM + (18_000 - profile.visibilityM) * (1 - intensity)
+  const focus = zones.find((zone) => zone.id === focusId) ?? null
+
+  return (
+    <section
+      aria-label="Simulated weather"
+      className="mt-3 rounded border border-sky-400/25 bg-sky-500/[0.06] p-2.5"
+    >
+      <header className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h3 aria-live="polite" className="truncate text-xs font-semibold text-white">
+            {profile.label}
+          </h3>
+          <p className="text-[8px] uppercase tracking-wider text-sky-300/80">
+            Simulated weather · illustrative
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => next()}
+          className="shrink-0 rounded border border-sky-300/40 bg-sky-400/10 px-2 py-0.5 text-[9px] font-medium text-sky-100 hover:bg-sky-400/20"
+        >
+          Next weather
+        </button>
+      </header>
+
+      <p className="mt-1 text-[10px] leading-snug text-neutral-300">
+        {profile.description}
+      </p>
+
+      <div className="mt-1.5">
+        <div className="flex items-center justify-between text-[8px] uppercase tracking-wider text-neutral-500">
+          <span>Intensity</span>
+          <span>{Math.round(intensity * 100)}%</span>
+        </div>
+        <div className="mt-0.5 h-1 overflow-hidden rounded bg-white/10">
+          <div
+            className="h-full rounded bg-sky-300 transition-[width] duration-200"
+            style={{ width: `${Math.round(intensity * 100)}%` }}
+          />
+        </div>
+      </div>
+
+      <dl className="mt-1.5 grid grid-cols-3 gap-1 text-[9px]">
+        <div className="rounded border border-white/10 bg-white/[0.03] px-1.5 py-1">
+          <dt className="text-[8px] uppercase tracking-wider text-neutral-500">Wind</dt>
+          <dd className="text-neutral-200">{wind.toFixed(0)} m/s</dd>
+        </div>
+        <div className="rounded border border-white/10 bg-white/[0.03] px-1.5 py-1">
+          <dt className="text-[8px] uppercase tracking-wider text-neutral-500">Dust</dt>
+          <dd className="text-neutral-200">{dust.toFixed(2)}</dd>
+        </div>
+        <div className="rounded border border-white/10 bg-white/[0.03] px-1.5 py-1">
+          <dt className="text-[8px] uppercase tracking-wider text-neutral-500">Visibility</dt>
+          <dd className="text-neutral-200">
+            {visibility >= 1000 ? `${(visibility / 1000).toFixed(1)} km` : `${Math.round(visibility)} m`}
+          </dd>
+        </div>
+      </dl>
+
+      <p className="mt-1 text-[9px] leading-snug text-neutral-400">
+        On screen: {profile.assetEffect}{' '}
+        <span className="text-neutral-500">
+          ({Math.round(tint.amount * 100)}% wash, {((lean * 180) / Math.PI).toFixed(1)}° lean)
+        </span>
+      </p>
+
+      <div className="mt-1.5 flex items-center justify-between gap-2 border-t border-white/10 pt-1.5">
+        <label className="flex items-center gap-1 text-[9px] text-neutral-400">
+          <input
+            type="checkbox"
+            checked={auto}
+            onChange={(event) => setAuto(event.target.checked)}
+            className="accent-sky-400"
+          />
+          Auto-cycle
+        </label>
+        <span className="text-[8px] text-neutral-500">
+          {focus ? focus.name : `default ${classification}`} · {Math.round(progress * 100)}%
+        </span>
+      </div>
+      <p className="mt-1 text-[8px] leading-relaxed text-neutral-600">
+        Invented effects for the 3D assets. Not a forecast, measured dust value
+        or certified EVA weather limit.
+      </p>
+    </section>
+  )
+}
+
+/**
  * Regional weather + radiation screening. Areas are classified safe, caution
  * or unsafe from derived weather and radiation estimates; scenic value and
  * science value are shown alongside so a safe-but-beautiful stop is visible.
@@ -153,6 +286,7 @@ export default function EnvironmentPanel() {
   const selectedId = useEnvironmentStore((state) => state.selectedId)
   const select = useEnvironmentStore((state) => state.select)
   const load = useEnvironmentStore((state) => state.load)
+  const setWeatherFocus = useWeatherStore((state) => state.setFocus)
 
   useEffect(() => {
     void load()
@@ -165,6 +299,14 @@ export default function EnvironmentPanel() {
   }, [zones])
 
   const selected = zones.find((zone) => zone.id === selectedId) ?? null
+
+  // Selecting a mapped region biases the simulated weather by its screening
+  // class. Clearing the selection restores the neutral default.
+  const weatherFocusId = selected?.id ?? null
+  const weatherFocusLevel: EnvironmentLevel = selected?.classification ?? 'caution'
+  useEffect(() => {
+    setWeatherFocus(weatherFocusId, weatherFocusLevel)
+  }, [weatherFocusId, weatherFocusLevel, setWeatherFocus])
 
   return (
     <aside className="p-3">
@@ -187,6 +329,8 @@ export default function EnvironmentPanel() {
       <p className="mt-1.5 text-[9px] leading-relaxed text-neutral-500">
         {note || 'Regional weather + radiation screening. Derived planning aid, not a measured dose or dust forecast.'}
       </p>
+
+      <SimulatedWeatherCard />
 
       {loading && !zones.length ? (
         <p role="status" className="mt-2 text-[11px] text-neutral-400">
