@@ -1,6 +1,6 @@
 import { Cartesian3, HeadingPitchRoll, Matrix4, Model, ModelAnimationLoop, Transforms, type Viewer } from 'cesium'
 import { MARS } from './trek'
-import { CREW_FORWARD_HEADING_OFFSET, HOP_SPEED_FACTOR, JUMP_DURATION, jumpHeight, MARS_GAIT_RATE } from './crewMission'
+import { CREW_FORWARD_HEADING_OFFSET, hopAirSpeed, JUMP_DURATION, jumpHeight, MARS_GAIT_RATE } from './crewMission'
 import { sampleRoute, totalDistanceKm, type RouteSample, type TraversableRoute } from './routePath'
 
 export const CREW_ASSETS = [
@@ -40,8 +40,10 @@ const CREW_GAIT = [
  * clearance to its walking formation offset. Keeps them clear of the parked
  * vehicle without spreading the group out. */
 const EXIT_MERGE_M = 18
-/** Bounded trailing gap (m): the group stays together without equal spacing. */
-const MAX_TRAIL_M = 3.2
+/** Bounded trailing gap (m): the group stays together without equal spacing.
+ *  Must exceed the longest single bound (MAX_HOP_STRIDE_M) so a hop never
+ *  yanks a trailing astronaut forward. */
+const MAX_TRAIL_M = 3.6
 /** How long the landing pose holds before the walk resumes (s). */
 const LANDING_HOLD_S = 0.4
 /** Authored Jump_Land clip length (s) played across the landing hold. */
@@ -118,7 +120,8 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
       if (!stopped && mode === 'walk') {
         for (const member of members) {
           const airborne = member.hop >= 0 && member.hop < JUMP_DURATION
-          const speed = pace * member.paceFactor * (airborne ? HOP_SPEED_FACTOR : 1)
+          // A bound is a long gravity stride; on the ground the crew walks.
+          const speed = airborne ? hopAirSpeed(pace, member.paceFactor) : pace * member.paceFactor
           member.progress = Math.min(spanM, member.progress + dt * speed)
         }
         // Pull stragglers up to the bounded trailing gap; the fastest leads.

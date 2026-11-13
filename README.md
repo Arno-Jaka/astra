@@ -257,8 +257,9 @@ mission grade limit.
 The supplied astronaut rigs play `Idle`, `Walk`, `Jump`, `Jump_Idle` and
 `Jump_Land`. Mars gravity (3.71 m/s²) drives the cues: the walk cadence is
 slowed by √(3.71/9.81) relative to Earth, and a hop follows a ballistic arc
-(`2·v₀/g`, v₀ = 1.4 m/s, ≈ 0.75 s aloft) whose longer air time also carries the
-crew farther per hop, with the exported Earth-style jump root motion locked out
+(`2·v₀/g`, v₀ = 2.0 m/s, ≈ 1.1 s aloft) whose longer air time also carries the
+crew several metres per bound — a long gravity stride rather than a shuffle —
+with the exported Earth-style jump root motion locked out
 so only one vertical impulse is applied. The crew is never in lockstep: each
 astronaut has a fixed stride factor, a lateral formation offset, a staggered
 hop schedule and a staggered exit, and the group is kept together with a

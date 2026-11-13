@@ -3,16 +3,27 @@ import type { VehicleKind } from './taskAssignment'
 
 export const MARS_CREW_GRAVITY = 3.71
 export const MARS_GAIT_RATE = Math.sqrt(MARS_CREW_GRAVITY / 9.81)
-export const JUMP_SPEED = 1.4 // m/s takeoff impulse; illustrative suited hop
+export const JUMP_SPEED = 2.0 // m/s takeoff impulse; illustrative suited bound
 export const jumpHeight = (seconds: number) => Math.max(0, JUMP_SPEED * seconds - 0.5 * MARS_CREW_GRAVITY * seconds ** 2)
 /** Air time of one suited hop (s). Longer under lower gravity. */
 export const hopDuration = (gravity: number = MARS_CREW_GRAVITY) => 2 * JUMP_SPEED / gravity
 export const JUMP_DURATION = hopDuration(MARS_CREW_GRAVITY)
-/** A bounding hop covers more ground than a walk step; the stride scales with
- * the gravity-dependent air time, so a Mars hop is longer than an Earth one. */
-export const HOP_SPEED_FACTOR = 1.35
+/** A bounding hop keeps a long, gravity-assisted stride: the crew drives forward
+ * hard through the whole hang time, so each leap covers several metres — far
+ * more than a walking step. The stride scales with the gravity-dependent air
+ * time, so a Mars hop carries farther than an Earth one. */
+export const HOP_SPEED_FACTOR = 5.5
+/** Longest ground a single hop may cover (m). Caps the airborne speed so an
+ * unusually fast walk pace can never turn a bound into a teleport past the
+ * group's trailing gap. */
+export const MAX_HOP_STRIDE_M = 3.2
+/** Airborne forward speed of a bound (m/s), capped so the hop stride stays
+ * within MAX_HOP_STRIDE_M regardless of the walking pace. */
+export const hopAirSpeed = (pace: number, paceFactor = 1, gravity: number = MARS_CREW_GRAVITY) =>
+  Math.min(pace * paceFactor * HOP_SPEED_FACTOR, MAX_HOP_STRIDE_M / hopDuration(gravity))
+/** Ground covered by one hop (m); a long low-gravity bound, not a shuffle. */
 export const hopStrideM = (pace: number, gravity: number = MARS_CREW_GRAVITY) =>
-  pace * HOP_SPEED_FACTOR * hopDuration(gravity)
+  hopAirSpeed(pace, 1, gravity) * hopDuration(gravity)
 
 /** Heading offset (radians) applied to a route bearing so the crew rig's body
  * faces the direction of travel. The rigs' glTF +Z forward maps to Cesium's
