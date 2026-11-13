@@ -23,7 +23,6 @@ const storeUrl = await moduleUrl('../src/store/weatherStore.ts', {
 const { useWeatherStore, weatherElapsedS } = await import(storeUrl)
 
 const KINDS = ['clear', 'sandstorm', 'dust-tornado', 'electrostatic', 'ice-squall', 'ice-fog']
-const SAFE = new Set(['clear', 'ice-squall', 'ice-fog', 'dust-tornado'])
 const UNSAFE = new Set(['sandstorm', 'dust-tornado', 'electrostatic', 'ice-squall'])
 
 assert.deepEqual(Object.keys(engine.WEATHER_PROFILES).sort(), [...KINDS].sort())
@@ -80,9 +79,19 @@ for (const seed of seeds) {
   assert.ok(KINDS.includes(engine.pickWeather('safe', seed)), 'safe pick is a known event')
   assert.ok(KINDS.includes(engine.pickWeather('caution', seed)), 'caution pick is a known event')
   assert.ok(KINDS.includes(engine.pickWeather('unsafe', seed)), 'unsafe pick is a known event')
-  assert.ok(SAFE.has(engine.pickWeather('safe', seed)), 'safe regions never get unsupported events')
   assert.ok(UNSAFE.has(engine.pickWeather('unsafe', seed)), 'unsafe regions only get hard weather')
   assert.notEqual(engine.pickWeather('unsafe', seed), 'clear', 'unsafe regions never open clear')
+}
+
+// Safe regions are never weather-less: every event remains reachable even though
+// the weather is visual-only and never gates traversal. A wider seed sweep keeps
+// this from depending on one lucky draw.
+const safeKinds = new Set()
+for (let index = 0; index < 512; index++) {
+  safeKinds.add(engine.pickWeather('safe', engine.nextSeed(index * 104729)))
+}
+for (const kind of KINDS) {
+  assert.ok(safeKinds.has(kind), `safe regions can still show ${kind}`)
 }
 
 // Store: initial dramatic event, region focus, manual advance and auto-cycle.
@@ -96,7 +105,7 @@ store.getState().setFocus('gale', 'safe', 1_000)
 const focused = store.getState()
 assert.equal(focused.focusId, 'gale')
 assert.equal(focused.classification, 'safe')
-assert.ok(SAFE.has(focused.kind), 'safe focus picks a safe-biased event')
+assert.ok(KINDS.includes(focused.kind), 'safe focus picks a known event')
 assert.equal(focused.startedAt, 1_000)
 
 store.getState().setFocus('gale', 'safe', 2_000)

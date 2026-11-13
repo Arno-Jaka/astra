@@ -55,8 +55,10 @@ Updated 13 November 2026.
   cycles invented events every 14–28 s — sandstorm walls, a dust tornado,
   electrostatic dry lightning, CO₂ ice squalls and ice fog, with calm gaps.
   Particles, screen wash, wind lean and a dust/ice colour wash act on the rover,
-  SEV and crew. A safe focused region biases the sequence calmer; an unsafe region
-  pushes it toward storms, tornadoes and lightning. The panel shows event
+  SEV and crew. Every event can appear even in a safe region — the weather is
+  visual-only and never affects traversal — while focusing a safe region biases
+  the sequence calmer and an unsafe region pushes it toward storms, tornadoes and
+  lightning. The panel shows event
   intensity, illustrative wind/dust/visibility and Next weather / Auto-cycle
   controls. These effects are invented visualizations, not a forecast, measured
   dust value or certified EVA weather limit; “rain” is CO₂ ice, not liquid water.

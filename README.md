@@ -91,8 +91,10 @@ profile. Replies are spoken with a neural voice.
   invented events every 14–28 s: regional sandstorm walls, a dust tornado,
   electrostatic dry lightning, CO₂ ice squalls and ice fog, with calm gaps.
   Particles, screen wash, wind lean and a dust/ice colour wash act on the rover,
-  SEV and crew. Selecting a safe region biases the sequence calmer; an unsafe
-  region pushes it toward storms, tornadoes and lightning. The panel shows event
+  SEV and crew. Every event can still appear in a safe region because the weather
+  is visual-only and never affects traversal; a safe focused region just biases
+  the sequence calmer, while an unsafe region pushes it toward storms, tornadoes
+  and lightning. The panel shows event
   intensity, illustrative wind/dust/visibility and a **Next weather** button with
   an **Auto-cycle** toggle. These effects are not a forecast, measured dust value
   or certified EVA weather limit; “rain” is shown as CO₂ ice, not liquid water.

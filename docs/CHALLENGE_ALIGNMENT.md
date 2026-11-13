@@ -25,7 +25,9 @@ the route planner so the two risk views are not conflated. A separate dynamic
 surface-weather layer adds visible, invented events (sandstorm walls, a dust
 tornado, electrostatic lightning, CO₂ ice squalls, ice fog) to the 3D assets; it
 is deliberately illustrative, not a forecast or a measured atmosphere, and it is
-kept distinct from the screening numbers.
+kept distinct from the screening numbers. The same events can occur in a safe
+region — the layer is visual-only and never affects traversal — with the
+screening class only shifting their relative frequency.
 
 Beyond that mapping, ASTRA selects between a crewed Space Exploration Vehicle
 (SEV) and a robotic rover from destination safety and robot-only task criteria

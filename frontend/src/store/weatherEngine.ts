@@ -206,8 +206,11 @@ function randomFromSeed(seed: number): number {
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296
 }
 
+// Every event is purely visual and never gates traversal, so even safe regions
+// can still see the full set of weather. Safe keeps a calmer weighting (more
+// clear/ice, less storm) but no event is excluded; unsafe drops the calm gaps.
 const EVENT_WEIGHTS: Record<EnvironmentLevel, Partial<Record<WeatherKind, number>>> = {
-  safe: { clear: 4, 'ice-squall': 3, 'ice-fog': 2, 'dust-tornado': 1 },
+  safe: { clear: 3, 'ice-fog': 2, 'ice-squall': 2, 'dust-tornado': 2, sandstorm: 2, electrostatic: 1 },
   caution: { clear: 1, 'ice-fog': 1, 'ice-squall': 2, 'dust-tornado': 3, sandstorm: 2, electrostatic: 1 },
   unsafe: { sandstorm: 3, 'dust-tornado': 3, electrostatic: 3, 'ice-squall': 1 },
 }
