@@ -4,6 +4,7 @@ import SelectionRings from './SelectionRings'
 import SiteSearch from './SiteSearch'
 import { MARS } from '../map/trek'
 import { useAppStore } from '../store/appStore'
+import { ENVIRONMENT_ENTITY_PREFIX } from '../store/environmentMeta'
 import { useMissionStore } from '../store/missionStore'
 import { dispatchLocalCommand, onCommand } from '../ws/commandChannel'
 
@@ -73,7 +74,7 @@ export default function MapExplorer({ viewer }: { viewer: Viewer }) {
       restore(); restore = () => {}; hovered = null; setCard(null)
     }
     const pick = (position: Cartesian2): Point | null => {
-      const entity = viewer.scene.pick(position)?.id
+      const entity = pickVisible(position)
       const world = entity instanceof Entity && (entity.point || entity.label) ? entity.position?.getValue(viewer.clock.currentTime) : undefined
       if (world) {
         const p = MARS.cartesianToCartographic(world)
@@ -86,9 +87,18 @@ export default function MapExplorer({ viewer }: { viewer: Viewer }) {
       return { lon: CesiumMath.toDegrees(p.longitude), lat: CesiumMath.toDegrees(p.latitude) }
     }
     const blocked = () => moving || useAppStore.getState().routePhase === 'simulating'
+    /** Skip screening-overlay entities so they never steal a site hover or a map click. */
+    const pickVisible = (position: Cartesian2) => {
+      for (const picked of viewer.scene.drillPick(position)) {
+        const id = picked?.id
+        if (id instanceof Entity && id.id.startsWith(ENVIRONMENT_ENTITY_PREFIX)) continue
+        if (id) return id
+      }
+      return undefined
+    }
     const handler = new ScreenSpaceEventHandler(viewer.canvas)
     handler.setInputAction(({ endPosition }: { endPosition: Cartesian2 }) => {
-      const picked = viewer.scene.pick(endPosition)?.id
+      const picked = pickVisible(endPosition)
       const entity = picked instanceof Entity && (picked.point || picked.label) ? picked : null
       if (blocked() || current.current.mode === 'busy') { cancel(); return }
       if (hovered && entity === hovered) return

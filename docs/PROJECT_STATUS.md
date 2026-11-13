@@ -1,6 +1,6 @@
 # ASTRA implementation and competition status
 
-Updated 12 November 2026.
+Updated 13 November 2026.
 
 ## Completed
 
@@ -43,6 +43,14 @@ Updated 12 November 2026.
   Each astronaut faces the direction of travel with an independent stride, hop
   timing and uneven-but-bounded spacing, and steps out with the jump and
   jump-land clips.
+- Regional weather & radiation screening: 21 mapped regions classified
+  **safe / caution / unsafe** from a derived weather + radiation estimate, with
+  scenic character and science value shown alongside. A globe overlay colours
+  zones green/amber/red and a panel lists each region's estimated temperature
+  range, dust index and surface dose. The dose is scaled from the Curiosity RAD
+  surface average (~0.64 mSv/day) by latitude and regional elevation and is
+  explicitly labelled derived — not a measured dose map, dust forecast or
+  certified EVA assessment. Terrain/slope safety remains the route planner's job.
 - Automated endpoint, geometry, build/lint and browser interaction checks.
 
 ## Competition alignment
@@ -63,8 +71,9 @@ event requirements still need verification against organizer instructions.
 For presentation, describe MOLA routes as **regional slope-based estimates**, not
 certified safe rover navigation or proof of the globally safest route. Context
 bearings are derived from sourced site coordinates. Only Gale has a REMS station
-feed here; other locations do not have local live weather. Synthetic small-scale
-relief and failure training remain labeled simulations.
+feed here; other locations do not have local live weather. The weather/radiation
+panel is a derived regional screening, not measured dose or storm data. Synthetic
+small-scale relief and failure training remain labeled simulations.
 
 ## Remaining work
 
@@ -78,7 +87,9 @@ relief and failure training remain labeled simulations.
    search may miss compliant detours on long trips.
 4. Scientific upgrades: georeferenced boxwork observation stations and measured
    HiRISE/CTX terrain for local obstacles, broader site coverage, and spatial
-   environmental/radiation data. Current MOLA resolution is ~1.9 km/pixel;
+   environmental/radiation observations. The regional screening is derived and
+   illustrative; measured dose maps, dust-storm forecasting and validated EVA
+   limits remain future work. Current MOLA resolution is ~1.9 km/pixel;
    rocks, soil traction and small cliffs are unresolved. Crew timing is a scenario
    calculation; validated suit/physiology/consumable models remain future work.
    SEV parking is a regional terrain candidate, not a certified safe/landing or

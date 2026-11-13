@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import ChatPanel, { type ChatMessage } from './components/ChatPanel'
 import ConditionsCard from './components/ConditionsCard'
+import EnvironmentPanel from './components/EnvironmentPanel'
 import RoutePanel from './components/RoutePanel'
 import SurvivalBriefingPanel from './components/SurvivalBriefingPanel'
 import CesiumMap from './map/CesiumMap'
@@ -15,7 +16,7 @@ const WELCOME: ChatMessage = {
   id: 0,
   role: 'assistant',
   content:
-    'ASTRA online. Select a departure point and a destination on the map; ASTRA predicts the safest and hazardous traverses and assigns a vehicle. A crew-safe destination sends the Space Exploration Vehicle all the way, with three astronauts walking or hopping the final approach; a hazardous destination parks the SEV nearby and auto-deploys a rover. Adjust mission parameters in the traverse plan. I can also fly to sites, retrieve Gale REMS reports and explain MOLA route hazards.',
+    'ASTRA online. Select a departure point and a destination on the map; ASTRA predicts the safest and hazardous traverses and assigns a vehicle. A crew-safe destination sends the Space Exploration Vehicle all the way, with three astronauts walking or hopping the final approach; a hazardous destination parks the SEV nearby and auto-deploys a rover. The weather & radiation panel screens regions as safe, caution or unsafe. Adjust mission parameters in the traverse plan. I can also fly to sites, retrieve Gale REMS reports and explain MOLA route hazards.',
 }
 
 export default function App() {
@@ -105,6 +106,11 @@ export default function App() {
       </FloatingPanel>
 
       <main>
+        <FloatingPanel id="environment" title="Weather & radiation" width={340} initial={{ left: 16, top: 90 }}>
+          <div className="max-h-[32vh] overflow-auto">
+            <EnvironmentPanel />
+          </div>
+        </FloatingPanel>
         <FloatingPanel id="console" title="Mission console" width={420} initial={{ left: 16, bottom: 16 }}>
           <ChatPanel
             messages={messages}

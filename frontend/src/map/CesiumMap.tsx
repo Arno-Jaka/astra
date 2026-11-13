@@ -74,6 +74,7 @@ import { declutterLabels } from './labelLayout'
 import { createWheelDust } from './wheelDust'
 import { createMolaTerrainProvider } from './terrain'
 import { MARS, MOLA_SHADE, VIKING, createTrekProvider } from './trek'
+import EnvironmentOverlay from './EnvironmentOverlay'
 
 /** Lift the rover origin (wheel plane) this far above the sampled ground. */
 const ROVER_GROUND_CLEARANCE = 0.03
@@ -2291,6 +2292,7 @@ export default function CesiumMap() {
       <LayerPanel terrainStatus={terrainStatus} onRetryTerrain={() => retryTerrainRef.current()} />
       <DriveHud />
       {mapViewer && !mapViewer.isDestroyed() && <MapExplorer viewer={mapViewer} />}
+      {mapViewer && !mapViewer.isDestroyed() && <EnvironmentOverlay viewer={mapViewer} />}
       <RoverCameraWindow poseRef={roverViewRef} />
     </>
   )

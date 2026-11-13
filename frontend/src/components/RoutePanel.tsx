@@ -140,7 +140,7 @@ export default function RoutePanel({ route }: { route: RouteData }) {
         <p>Three-person crew: Finn, Rae &amp; Fernando.</p>
         <p>{mission.reason}</p>
         <p>{assignment.handoff}</p>
-        <p className="text-neutral-400">Both the safest (slope-compliant) and hazardous traverses are predicted for the chosen start and destination; the assignment follows the selected traverse. Mars gravity: 3.71 m/s². Vehicle effects and parking are simulated; local obstacles and contamination clearance are unassessed.</p>
+        <p className="text-neutral-400">Both the safest (slope-compliant) and hazardous traverses are predicted for the chosen start and destination; the assignment follows the selected traverse. Mars gravity: 3.71 m/s². Vehicle effects and parking are simulated; local obstacles and contamination clearance are unassessed; regional weather/radiation screening is illustrative.</p>
         <p aria-live="polite">Mission: {missionPhase.replaceAll('-', ' ')}{crewMessage ? ` · ${crewMessage}` : ''}</p>
         {completion === 'arrived' && <p className="text-cyan-200">{assignment.vehicle === 'rover' ? 'Rover reached the target; the crew remains beside the parked SEV.' : 'All three crew members reached the target area; the SEV is parked nearby.'}</p>}
         {completion === 'risk-hold' && <p className="text-amber-200">Mission held. Reassess the route before proceeding.</p>}
@@ -261,8 +261,8 @@ export default function RoutePanel({ route }: { route: RouteData }) {
         ) : (
           <p className="text-amber-200">The selected traverse is not crew-safe: the SEV parks at the last safe point and the rover performs the final approach, so there is no on-foot leg to the target.</p>
         )}
-        <p className="text-amber-200">{hazardous || !route.slope_compliant ? 'Exceeds the selected regional slope envelope.' : 'Meets the selected regional slope envelope.'} Local obstacles, radiation and suit consumables remain unassessed.</p>
-        <p className="text-neutral-400">User-assumed walking pace and suit/equipment time allowance. No oxygen, metabolic, radiation or suit certification model.</p>
+        <p className="text-amber-200">{hazardous || !route.slope_compliant ? 'Exceeds the selected regional slope envelope.' : 'Meets the selected regional slope envelope.'} Local obstacles and suit consumables remain unassessed; the weather/radiation panel is a derived regional screening, not a certified EVA assessment.</p>
+        <p className="text-neutral-400">User-assumed walking pace and suit/equipment time allowance. No oxygen, metabolic or suit certification model; radiation screening is regional and illustrative, not a dose plan.</p>
       </section> : null}
 
       <section className="mt-3 rounded-lg border border-cyan-400/25 bg-cyan-400/[0.05] px-3 pb-2.5 pt-2">

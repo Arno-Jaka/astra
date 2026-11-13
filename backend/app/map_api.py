@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Response
 from PIL import Image
 from pydantic import BaseModel, Field
 
-from . import dem
+from . import dem, environment
 from .dem import MARS_RADIUS_KM, DemUnavailable, heightmap
 from .gazetteer import SITES
 from .location_context import location_context
@@ -126,6 +126,33 @@ def sites() -> list[dict[str, object]]:
         }
         for site in SITES
     ]
+
+
+@router.get("/environment/zones")
+def environment_zones() -> dict[str, Any]:
+    try:
+        zones = environment.zones()
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail=f"Environment screening unavailable: {exc}") from exc
+    return {
+        "zones": zones,
+        "basis": "derived",
+        "note": (
+            "Illustrative regional weather/radiation screening derived from "
+            "published planetary ranges and latitude/elevation. Not a measured "
+            "dose map, a dust forecast, or a certified EVA-safety assessment; "
+            "terrain/slope suitability is assessed separately by the route planner."
+        ),
+        "radiation_source_url": environment.RAD_SOURCE_URL,
+        "weather_source_url": REMS_URL,
+    }
+
+
+@router.get("/environment/point")
+def environment_point(lon: float, lat: float) -> dict[str, Any]:
+    if not (-180 <= lon <= 180 and -90 <= lat <= 90):
+        raise HTTPException(400, "Invalid coordinates")
+    return environment.assess_point(lon, lat)
 
 
 def _to_float(value: Any) -> float | None:

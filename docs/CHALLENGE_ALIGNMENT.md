@@ -10,11 +10,18 @@ obstacle-avoiding routes. This document assesses that scope, not event eligibili
 | An interface for a Mars astronaut | Site search, arbitrary-point selection, sourced inspection, safe/hazardous route comparison and a destination-driven SEV/rover mission | Exploration/planning prototype; rover simulation is a supplementary visualization |
 | Identify scientific goals and an exploration area | Editable science objective; default ancient-groundwater/boxwork investigation in Gale/Mount Sharp; NASA Mastcam context | Regional focus only. No fabricated precise boxwork station coordinates or verified mineral detections; georeferenced science experiment areas of interest are future work |
 | Use NASA data and tools | Mars Trek/Viking, MGS MOLA from PDS, MSL Mastcam and REMS, source links | IAU/USGS coordinates provide additional named-site context; geometry and EVA timing are derived calculations |
-| Consider at least three kinds of data | Optical images, topographic terrain/slopes, atmospheric station observations in one mission workflow | Atmospheric feed is Gale-only, dated, and may be unavailable. No global weather layer or forecast |
-| Prioritize crew safety | Slope-compliance comparison, danger annotations, round-trip time allocation and reserve, explicit unknown hazards | Regional slope assessment and assumed time feasibility are not evidence of overall safety |
+| Consider at least three kinds of data | Optical images, topographic terrain/slopes, atmospheric station observations, and a derived regional weather/radiation screening in one mission workflow | Atmospheric feed is Gale-only, dated, and may be unavailable. The screening is derived, not a global measured weather/radiation layer |
+| Prioritize crew safety | Slope-compliance comparison, danger annotations, regional weather/radiation screening (safe/caution/unsafe), round-trip time allocation and reserve, explicit unknown hazards | Regional slope assessment, derived screening and assumed time feasibility are not evidence of overall safety |
 | Account for suits/equipment and science tasks | User-assumed walking pace and additional suit/kit travel-time percentage; science stop; return reserve; EVA budget | No empirical mass-to-metabolism model, oxygen calculation or certified suit envelope |
 | If possible, route to scientific objectives while avoiding obstacles | Route from a chosen departure point to a candidate science station, with slope-constrained detours when found | MOLA cannot resolve individual rocks or local cliffs; verified outcrop access needs georeferenced high-resolution imagery/DTMs |
-| Consider radiation/space weather | The mission/route assessment explicitly identifies radiation as unassessed | Radiation observations, alerts, dose/exposure integration and validated limits are not implemented |
+| Consider radiation/space weather | Regional weather + radiation screening classifies 21 mapped zones **safe / caution / unsafe**, with scenic character and science value, plus estimated temperature range, dust index and surface dose | Derived from published planetary ranges and latitude/regional elevation; not a measured dose map, dust forecast or space-weather alert service, and not validated exposure limits |
+
+The weather/radiation screening is deliberately an **illustrative regional
+screening**, not a certified EVA assessment. Per-zone estimates are derived from
+latitude and approximate regional elevation, anchored to published ranges such
+as the Curiosity RAD surface average (~0.64 mSv/day); they are not measured dose
+or dust values for a spot. Terrain and slope safety are assessed separately by
+the route planner so the two risk views are not conflated.
 
 Beyond that mapping, ASTRA selects between a crewed Space Exploration Vehicle
 (SEV) and a robotic rover from destination safety and robot-only task criteria

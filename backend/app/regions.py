@@ -49,8 +49,9 @@ BRIEFINGS: dict[str, dict[str, Any]] = {
             {
                 "label": "Unmodeled risks",
                 "detail": (
-                    "ASTRA does not model radiation dose, dust-storm timing, or "
-                    "rover trafficability. Use this as a planning preview."
+                    "ASTRA screens regional weather and radiation (illustrative "
+                    "estimates, not a forecast or measured dose) but does not model "
+                    "dust-storm timing or rover trafficability. Use this as a planning preview."
                 ),
                 "source_url": GAZETTEER_URL,
             },
@@ -148,8 +149,9 @@ BRIEFINGS: dict[str, dict[str, Any]] = {
             {
                 "label": "Unmodeled risks",
                 "detail": (
-                    "ASTRA does not model radiation dose, dust-storm timing, or "
-                    "rover trafficability. Use this as a planning preview."
+                    "ASTRA screens regional weather and radiation (illustrative "
+                    "estimates, not a forecast or measured dose) but does not model "
+                    "dust-storm timing or rover trafficability. Use this as a planning preview."
                 ),
                 "source_url": GAZETTEER_URL,
             },
