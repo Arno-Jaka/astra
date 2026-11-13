@@ -1,6 +1,6 @@
 import { Cartesian3, HeadingPitchRoll, Matrix4, Model, ModelAnimationLoop, Transforms, type Viewer } from 'cesium'
 import { MARS } from './trek'
-import { CREW_FORWARD_HEADING_OFFSET, hopAirSpeed, JUMP_DURATION, jumpHeight, MARS_GAIT_RATE } from './crewMission'
+import { approachSpeedMps, CREW_FORWARD_HEADING_OFFSET, HOP_GROUND_FACTOR, HOP_SPEED_FACTOR, JUMP_DURATION, jumpHeight, MARS_GAIT_RATE } from './crewMission'
 import { sampleRoute, totalDistanceKm, type RouteSample, type TraversableRoute } from './routePath'
 
 export const CREW_ASSETS = [
@@ -26,24 +26,25 @@ type Member = {
   exited: boolean
 }
 
-/** Three distinct gaits: different stride speeds, uneven spacing, staggered
- * exits and staggered hop schedules so they never move in unison. The crew
- * steps out of the carrier's flank (`exitSide`, all on one side, clear of the
- * ~2 m SEV half-width) and merges to its formation offset (`side`) over the
- * first metres of the walk. */
+/** Three gaits: slightly different stride factors, uneven spacing, staggered
+ * exits and staggered hop phases so they never move in unison. The crew steps
+ * out of the carrier's flank (`exitSide`, all on one side, clear of the ~2 m
+ * SEV half-width) and merges to its formation offset (`side`) over the first
+ * metres of the walk. Hops are frequent and short-cycled so the crew bounds
+ * continuously in the low gravity rather than plodding. */
 const CREW_GAIT = [
-  { paceFactor: 1.06, side: -1.1, exitSide: 5.2, exitAlong: -1.0, exitDelay: 0.3, hopCooldown: 1.2, hopPeriod: 6.5 },
-  { paceFactor: 0.93, side: 0.9, exitSide: 5.6, exitAlong: -0.2, exitDelay: 1.4, hopCooldown: 3.6, hopPeriod: 5.0 },
-  { paceFactor: 1.0, side: 0.1, exitSide: 5.3, exitAlong: 0.7, exitDelay: 2.5, hopCooldown: 2.3, hopPeriod: 7.5 },
+  { paceFactor: 1.04, side: -1.1, exitSide: 5.2, exitAlong: -1.0, exitDelay: 0.2, hopCooldown: 0.15, hopPeriod: 0.35 },
+  { paceFactor: 0.97, side: 0.9, exitSide: 5.6, exitAlong: -0.2, exitDelay: 0.9, hopCooldown: 0.55, hopPeriod: 0.50 },
+  { paceFactor: 1.0, side: 0.1, exitSide: 5.3, exitAlong: 0.7, exitDelay: 1.6, hopCooldown: 0.95, hopPeriod: 0.65 },
 ]
 /** Distance (m) over which the crew merges from its beside-the-carrier exit
  * clearance to its walking formation offset. Keeps them clear of the parked
  * vehicle without spreading the group out. */
 const EXIT_MERGE_M = 18
 /** Bounded trailing gap (m): the group stays together without equal spacing.
- *  Must exceed the longest single bound (MAX_HOP_STRIDE_M) so a hop never
- *  yanks a trailing astronaut forward. */
-const MAX_TRAIL_M = 3.6
+ *  Large enough to absorb the airborne surge of a bound so a hop never yanks a
+ *  trailing astronaut forward. */
+const MAX_TRAIL_M = 6.0
 /** How long the landing pose holds before the walk resumes (s). */
 const LANDING_HOLD_S = 0.4
 /** Authored Jump_Land clip length (s) played across the landing hold. */
@@ -76,6 +77,10 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
   let mode: 'exit' | 'hold' | 'walk' | 'complete' = 'exit'
   const total = totalDistanceKm(route)
   const spanM = Math.max(1e-6, (1 - stagingT) * total * 1000)
+  // Presentation speed: the on-screen final approach covers the span in
+  // CREW_APPROACH_SECONDS so the crew bounds to the target promptly. The panel's
+  // EVA estimate still uses the real suited pace.
+  const approachSpeed = approachSpeedMps(spanM)
   const stage = sampleRoute(route, stagingT)
   const pose = (member: Member, clip: Pose, dt: number, rate = 1) => {
     if (!member.model.ready) return
@@ -108,6 +113,8 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
     destroy,
     get mode() { return mode },
     get fraction() { return stagingT + leadProgress / (total * 1000) },
+    /** Visual speed of the on-screen final approach (m/s). */
+    get speedMps() { return approachSpeed },
     stop() { stopped = true; for (const member of members) member.hop = -1 },
     walk() { mode = 'walk' },
     jump() {
@@ -120,8 +127,8 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
       if (!stopped && mode === 'walk') {
         for (const member of members) {
           const airborne = member.hop >= 0 && member.hop < JUMP_DURATION
-          // A bound is a long gravity stride; on the ground the crew walks.
-          const speed = airborne ? hopAirSpeed(pace, member.paceFactor) : pace * member.paceFactor
+          // A bound is a long gravity stride; between bounds the crew glides.
+          const speed = Math.max(pace, approachSpeed) * member.paceFactor * (airborne ? HOP_SPEED_FACTOR : HOP_GROUND_FACTOR)
           member.progress = Math.min(spanM, member.progress + dt * speed)
         }
         // Pull stragglers up to the bounded trailing gap; the fastest leads.
@@ -166,7 +173,7 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
         const landing = member.hop >= JUMP_DURATION
         const clip: Pose = airborne ? (member.hop < JUMP_DURATION * 0.55 ? 'Jump' : 'Jump_Idle')
           : landing ? 'Jump_Land' : mode === 'walk' && !stopped ? 'Walk' : 'Idle'
-        const rate = clip === 'Walk' ? Math.min(1.3, (pace * member.paceFactor) / 0.5) * MARS_GAIT_RATE
+        const rate = clip === 'Walk' ? Math.min(2.2, approachSpeed / 3) * MARS_GAIT_RATE
           : clip === 'Jump_Land' ? LANDING_CLIP_S / LANDING_HOLD_S : MARS_GAIT_RATE
         pose(member, clip, dt, rate)
         // Merge from the exit clearance to the formation offset as they walk,

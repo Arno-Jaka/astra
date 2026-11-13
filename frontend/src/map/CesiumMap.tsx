@@ -1570,7 +1570,7 @@ export default function CesiumMap() {
           }
           bearing = sample.bearing
           updateChaseCamera(sample, ground, Math.max(0.001, dt))
-          useDriveStore.getState().update({ distanceKm: sample.distanceKm, speedMps: controls.paused ? 0 : surfaceCrew.mode === 'walk' ? pace : 0, timeScale: 1 })
+          useDriveStore.getState().update({ distanceKm: sample.distanceKm, speedMps: controls.paused ? 0 : surfaceCrew.mode === 'walk' ? surfaceCrew.speedMps : 0, timeScale: 1 })
           useAppStore.getState().setPreviewT(lastT)
           if (surfaceCrew.mode === 'complete') { endDrive('arrived'); return }
           scoutFrame = requestAnimationFrame(crewStep)

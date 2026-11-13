@@ -8,7 +8,7 @@ async function moduleUrl(path, imports = {}) {
 }
 const routePath = await moduleUrl('../src/map/routePath.ts')
 const { planCrewMission, jumpHeight, JUMP_DURATION, JUMP_SPEED, MARS_CREW_GRAVITY, formatDistance,
-  hopDuration, hopStrideM, hopAirSpeed, HOP_SPEED_FACTOR, MAX_HOP_STRIDE_M, CREW_FORWARD_HEADING_OFFSET } = await import(await moduleUrl('../src/map/crewMission.ts', { './routePath': routePath }))
+  hopDuration, hopStrideM, approachSpeedMps, CREW_APPROACH_SECONDS, HOP_SPEED_FACTOR, HOP_GROUND_FACTOR, CREW_FORWARD_HEADING_OFFSET } = await import(await moduleUrl('../src/map/crewMission.ts', { './routePath': routePath }))
 const route = { distance_km: 1, coordinates: [[0, 0], [0, 0.005], [0, 0.01]], profile: [0, 0.5, 1].map(distance_km => ({ distance_km, grade_deg: 2, elevation_m: 0 })) }
 const safeSev = planCrewMission(route, 15, 'sev')
 assert.equal(safeSev.stagingT, 0.8)
@@ -52,10 +52,13 @@ assert.equal(CREW_FORWARD_HEADING_OFFSET, -Math.PI / 2)
 assert.ok(Math.abs(hopDuration(MARS_CREW_GRAVITY) - JUMP_DURATION) < 1e-12)
 assert.ok(hopStrideM(0.5, MARS_CREW_GRAVITY) > hopStrideM(0.5, 9.81), 'lower gravity gives a longer hop stride')
 assert.ok(Math.abs(hopStrideM(0.5, MARS_CREW_GRAVITY) - 0.5 * HOP_SPEED_FACTOR * JUMP_DURATION) < 1e-12)
-// Each hop is a long gravity stride, not a shuffle: several metres per bound.
-assert.ok(hopStrideM(0.5, MARS_CREW_GRAVITY) > 2.5, `hop stride is a long bound: ${hopStrideM(0.5, MARS_CREW_GRAVITY).toFixed(2)} m`)
-// A fast walk pace cannot stretch a bound past the cap (keeps the group together).
-assert.ok(Math.abs(hopAirSpeed(2, 1.06) * JUMP_DURATION - MAX_HOP_STRIDE_M) < 1e-9)
+// The on-screen approach covers its span in CREW_APPROACH_SECONDS, and each
+// bound at that speed is a long gravity stride (not a shuffle).
+assert.ok(CREW_APPROACH_SECONDS >= 10 && CREW_APPROACH_SECONDS <= 15, `approach target is 10-15 s: ${CREW_APPROACH_SECONDS}`)
+const approach = approachSpeedMps(200)
+assert.ok(Math.abs(200 / approach - CREW_APPROACH_SECONDS) < 1e-9)
+assert.ok(hopStrideM(approach, MARS_CREW_GRAVITY) > 15, `bound is a long stride: ${hopStrideM(approach, MARS_CREW_GRAVITY).toFixed(1)} m`)
+assert.ok(HOP_SPEED_FACTOR > HOP_GROUND_FACTOR, 'a bound surges ahead of the grounded glide')
 for (const name of ['FinnTheFrog', 'RaeTheRedPanda', 'FernandoTheFlamingo']) {
   const gltf = JSON.parse(await readFile(new URL(`../src/3D _assets/Astronaut_${name}.gltf`, import.meta.url), 'utf8'))
   for (const clip of ['Idle', 'Walk', 'Jump', 'Jump_Idle', 'Jump_Land']) assert.ok(gltf.animations.some(a => a.name === clip), `${name}: ${clip}`)

@@ -8,22 +8,24 @@ export const jumpHeight = (seconds: number) => Math.max(0, JUMP_SPEED * seconds 
 /** Air time of one suited hop (s). Longer under lower gravity. */
 export const hopDuration = (gravity: number = MARS_CREW_GRAVITY) => 2 * JUMP_SPEED / gravity
 export const JUMP_DURATION = hopDuration(MARS_CREW_GRAVITY)
-/** A bounding hop keeps a long, gravity-assisted stride: the crew drives forward
- * hard through the whole hang time, so each leap covers several metres — far
- * more than a walking step. The stride scales with the gravity-dependent air
- * time, so a Mars hop carries farther than an Earth one. */
-export const HOP_SPEED_FACTOR = 5.5
-/** Longest ground a single hop may cover (m). Caps the airborne speed so an
- * unusually fast walk pace can never turn a bound into a teleport past the
- * group's trailing gap. */
-export const MAX_HOP_STRIDE_M = 3.2
-/** Airborne forward speed of a bound (m/s), capped so the hop stride stays
- * within MAX_HOP_STRIDE_M regardless of the walking pace. */
-export const hopAirSpeed = (pace: number, paceFactor = 1, gravity: number = MARS_CREW_GRAVITY) =>
-  Math.min(pace * paceFactor * HOP_SPEED_FACTOR, MAX_HOP_STRIDE_M / hopDuration(gravity))
-/** Ground covered by one hop (m); a long low-gravity bound, not a shuffle. */
-export const hopStrideM = (pace: number, gravity: number = MARS_CREW_GRAVITY) =>
-  hopAirSpeed(pace, 1, gravity) * hopDuration(gravity)
+/** Wall-clock seconds the on-screen final approach should take. The EVA time
+ * estimate in the panel still uses the real suited pace; this only controls how
+ * fast the illustrative low-gravity bound plays out, so the crew bounds to the
+ * target promptly instead of plodding at the walking pace. */
+export const CREW_APPROACH_SECONDS = 11
+/** Visual speed of the on-screen final approach (m/s): covers `spanM` in
+ * CREW_APPROACH_SECONDS. Presentation only — not a suited walking speed. */
+export const approachSpeedMps = (spanM: number) => Math.max(0.1, spanM / CREW_APPROACH_SECONDS)
+/** Airborne speed of a bound, relative to the approach speed. The crew keeps a
+ * long, gravity-assisted stride, so a bound carries them ahead of the base
+ * glide. The stride scales with the gravity-dependent air time, so a Mars bound
+ * carries farther than an Earth one. */
+export const HOP_SPEED_FACTOR = 1.15
+/** Grounded glide between bounds, relative to the approach speed. */
+export const HOP_GROUND_FACTOR = 0.85
+/** Ground covered by one bound (m); a long low-gravity stride, not a step. */
+export const hopStrideM = (speed: number, gravity: number = MARS_CREW_GRAVITY) =>
+  speed * HOP_SPEED_FACTOR * hopDuration(gravity)
 
 /** Heading offset (radians) applied to a route bearing so the crew rig's body
  * faces the direction of travel. The rigs' glTF +Z forward maps to Cesium's

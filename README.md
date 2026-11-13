@@ -260,7 +260,10 @@ slowed by √(3.71/9.81) relative to Earth, and a hop follows a ballistic arc
 (`2·v₀/g`, v₀ = 2.0 m/s, ≈ 1.1 s aloft) whose longer air time also carries the
 crew several metres per bound — a long gravity stride rather than a shuffle —
 with the exported Earth-style jump root motion locked out
-so only one vertical impulse is applied. The crew is never in lockstep: each
+so only one vertical impulse is applied. The on-screen final approach is
+time-compressed so it plays out in ~10–15 s (a fast, floaty low-gravity bound);
+the panel's EVA estimate still uses the real assumed walking pace, which is far
+slower. The crew is never in lockstep: each
 astronaut has a fixed stride factor, a lateral formation offset, a staggered
 hop schedule and a staggered exit, and the group is kept together with a
 bounded trailing gap so spacing stays uneven without spreading out. Each rig is
