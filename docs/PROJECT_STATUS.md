@@ -4,13 +4,18 @@ Updated 12 November 2026.
 
 ## Completed
 
-- Astronaut science mission panel with a NASA-sourced 2025 boxwork objective,
-  Mastcam panorama, and regional Mount Sharp focus.
-- Combined optical/topographic/atmospheric context, dated Gale REMS reports,
-  report-age display and explicit feed-outage handling.
-- Crew-specific round-trip time allocations with user-assumed pace, suit/kit
-  allowance, science time, return reserve and budget; snapshot and recalculation
-  support for both alternatives. Independent time and slope assessments.
+- Destination-driven vehicle workflow: whenever a start and destination are
+  chosen, ASTRA predicts the safest (slope-compliant) and hazardous direct
+  traverses. A crew-safe destination sends the crewed Space Exploration Vehicle
+  (SEV) the full traverse (any distance) to park a fixed standoff from the target;
+  a hazardous destination parks the SEV at the last safe point and auto-deploys
+  the rover to the target.
+- NASA-sourced 2025 boxwork science objective (default) and regional Mount Sharp
+  focus, with the mission parameters (objective, slope envelope, pace, suit/kit
+  allowance, science time, reserve, budget) edited in the traverse plan rather
+  than a separate science-mission panel.
+- Crew final-approach time estimate for the on-foot leg only, with a snapshot and
+  recalculation support. Independent time and slope assessments.
 - NASA Mars Trek imagery, MOLA terrain and slope layers, terrain-service fallback.
 - Site-only 1.5-second hover inspection with image, elevation, sourced background,
   target-adjacent positioning, hover emphasis, and dismissal on leaving the target.
@@ -24,14 +29,16 @@ Updated 12 November 2026.
   when found, with explicit unavailable outcomes, elevation profiles and hazards.
 - Rover preview, accelerated simulation, chase and rover cameras, draggable HUDs,
   illustrative crash/CO₂ training, and separation of measured/simulated content.
-- Automatic vehicle selection (robotic rover vs crewed Space Exploration Vehicle)
-  from task flags and terrain, using one shared policy for the route panel and the
+- Automatic vehicle selection (robotic rover vs crewed SEV) from destination
+  safety and task flags, using one shared policy for the route panel and the
   launch.
-- Three-astronaut SEV crew (Finn, Rae, Fernando) that drives to a terrain-based
-  staging candidate, disembarks, then walks the final approach or holds while the
+- Three-astronaut SEV crew (Finn, Rae, Fernando) that drives to the target (or the
+  last safe point), hops out, then walks the final approach or holds while the
   rover is deployed. Idle/walk/jump/jump-land clips use Mars gravity (3.71 m/s²):
   a slowed gait and a ballistic hop with the exported Earth-style jump root motion
-  locked out.
+  locked out. Each astronaut faces the direction of travel with an independent
+  pace, hop timing and uneven-but-bounded spacing, and steps out with the jump and
+  jump-land clips.
 - Automated endpoint, geometry, build/lint and browser interaction checks.
 
 ## Competition alignment
@@ -61,14 +68,17 @@ relief and failure training remain labeled simulations.
    in the supplied objectives. The objective-to-feature mapping is documented.
 2. Prepare/verify the deployed demo, team submission page, presentation/video,
    source and asset credits, and any required AI-use disclosures under those rules.
-3. If longer travel is needed, replace the 400 km regional limit with hierarchical
-   routing and global longitude/polar handling rather than merely removing it.
+3. The arbitrary 400 km route rejection has been removed so longer SEV traverses
+   can be previewed. Add hierarchical/global routing and dateline/polar handling
+   to make long-distance safe-route search reliable; bounded sampling and A*
+   search may miss compliant detours on long trips.
 4. Scientific upgrades: georeferenced boxwork observation stations and measured
    HiRISE/CTX terrain for local obstacles, broader site coverage, and spatial
    environmental/radiation data. Current MOLA resolution is ~1.9 km/pixel;
    rocks, soil traction and small cliffs are unresolved. Crew timing is a scenario
    calculation; validated suit/physiology/consumable models remain future work.
-   Crew disembarkation staging is a regional terrain candidate, not a certified
-   safe/landing or contamination-cleared point, and there is no local obstacle
-   avoidance on the final approach.
+   SEV parking is a regional terrain candidate, not a certified safe/landing or
+   contamination-cleared point, there is no local obstacle avoidance on the final
+   approach, and georeferenced science experiment areas of interest are not yet
+   defined.
 5. Expand device/accessibility testing and production failure/recovery coverage.

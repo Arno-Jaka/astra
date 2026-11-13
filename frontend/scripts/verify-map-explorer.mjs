@@ -31,14 +31,9 @@ const button = text => `[...document.querySelectorAll('button')].find(e=>e.textC
 try {
   await call('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
   await call('Network.enable')
-  await call('Network.setBlockedURLs', { urls: ['*api/weather/station*'] })
   await call('Page.navigate', { url: process.env.APP_URL ?? 'http://localhost:5173' })
   await delay(2000)
   await waitFor(`globalThis.__astraViewer && document.querySelector('[aria-label="Search Mars sites"]')`)
-  await waitFor(`document.querySelector('[data-panel="crew-mission"]')?.textContent.includes('Mastcam')`)
-  await waitFor(`document.querySelector('[data-panel="crew-mission"]')?.textContent.includes('Failed to fetch')`)
-  assert.ok(await evaluate(`document.querySelector('[data-panel="crew-mission"]').textContent.includes('Three NASA data contexts')`))
-  await call('Network.setBlockedURLs', { urls: [] })
   await evaluate(`(async()=>{const source=await(await fetch('/src/components/MapExplorer.tsx')).text();
     const url=source.split('"').find(s=>s.startsWith('/node_modules/')&&s.includes('/cesium.js'));
     globalThis.C=await import(url);__astraViewer.camera.setView({destination:C.Cartesian3.fromDegrees(137.81,-5.37,1500000,C.Ellipsoid.MARS)});
@@ -81,15 +76,15 @@ try {
   await waitFor(`${button('Set destination')} && !${button('Set destination')}.disabled`)
   await evaluate(`${button('Set destination')}.click()`)
   await waitFor(`[...document.querySelectorAll('h2')].some(e=>e.textContent.includes('Gale Crater')&&e.textContent.includes('Mount Sharp')) && !${button('Clear')}.disabled`)
-  await waitFor(`document.querySelector('[aria-label="Crew EVA assessment"]')?.textContent.includes('Exceeds assumed time budget')`)
-  await evaluate(`(()=>{const change=(label,value)=>{const input=document.querySelector('[aria-label="'+label+'"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,value);input.dispatchEvent(new Event('input',{bubbles:true}));};change('Assumed walking pace (m/s)','2');change('Suit/equipment extra travel time (%)','0');change('Total EVA time budget (hours)','24')})()`)
+  await waitFor(`document.querySelector('[aria-label="Crew final approach"]')?.textContent.includes('Within assumed time budget')`)
+  await evaluate(`(()=>{const details=[...document.querySelectorAll('details')].find(d=>d.querySelector('summary')?.textContent.includes('Mission parameters'));if(details)details.open=true;const change=(label,value)=>{const input=document.querySelector('[aria-label="'+label+'"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,value);input.dispatchEvent(new Event('input',{bubbles:true}));};change('Assumed walking pace (m/s)','2');change('Suit/equipment extra travel time (%)','0')})()`)
   await waitFor(`document.querySelector('[aria-label="Assumed walking pace (m/s)"]').value==='2'`)
-  assert.ok(await evaluate(`document.querySelector('[aria-label="Crew EVA assessment"]').textContent.includes('0.5 m/s + 50%')`), 'old route retains its assumption snapshot until recalculated')
-  await evaluate(`${button('Recalculate selected crew route')}.click()`)
-  await waitFor(`document.querySelector('[aria-label="Crew EVA assessment"]')?.textContent.includes('2 m/s + 0%')`)
-  assert.ok(await evaluate(`document.querySelector('[aria-label="Crew EVA assessment"]').textContent.includes('Within assumed time budget')`))
+  assert.ok(await evaluate(`document.querySelector('[aria-label="Crew final approach"]').textContent.includes('Assumed pace: 0.5 m/s')`), 'old route retains its assumption snapshot until recalculated')
+  await evaluate(`${button('Recalculate route')}.click()`)
+  await waitFor(`document.querySelector('[aria-label="Crew final approach"]')?.textContent.includes('Assumed pace: 2 m/s')`)
+  assert.ok(await evaluate(`document.querySelector('[aria-label="Crew final approach"]').textContent.includes('Within assumed time budget')`))
   console.log('Passed: site-only hover delay/dismissal/enlargement, in-view card, arbitrary-terrain endpoints and bearings, duplicate prevention, colored rings, search information, and automatic route replacement.')
-  console.log('Passed: science context, atmospheric outage, crew round-trip budget, assumption snapshots and recalculation.')
+  console.log('Passed: final-approach EVA estimate, assumption snapshot, and recalculation.')
 } finally {
   socket.close()
 }

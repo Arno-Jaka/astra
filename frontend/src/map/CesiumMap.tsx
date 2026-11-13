@@ -68,7 +68,7 @@ import { vehicleModel } from './vehicleModels'
 import { planCrewMission } from './crewMission'
 import { createSurfaceCrew, type SurfaceCrew } from './surfaceCrew'
 import { advanceDrive, arrivalSpeedLimit } from './driveMotion'
-import { advanceCrash, bodySupport, terrainSupport, type CrashBody } from './crashPhysics'
+import { advanceCrash, bodySupport, terrainSupport, topplesAtCliff, type CrashBody } from './crashPhysics'
 import { createDriveSurface } from './driveSurface'
 import { declutterLabels } from './labelLayout'
 import { createWheelDust } from './wheelDust'
@@ -1541,8 +1541,9 @@ export default function CesiumMap() {
           previous = now
           if (controls.stopRequested) { endDrive(); return }
           if (controls.jumpRequested) { surfaceCrew.jump(); useDriveStore.setState({ jumpRequested: false }) }
-          const profile = route.crew_estimate?.profile
-          const pace = (profile?.pace_m_s ?? 0.5) / (1 + (profile?.mobility_allowance_pct ?? 50) / 100)
+          // The crew walks at the assumed pace. The suit/equipment allowance is
+          // a planning-time factor for the EVA estimate, not a walking-speed cut.
+          const pace = route.crew_estimate?.profile?.pace_m_s ?? 0.5
           surfaceCrew.update(dt, pace)
           if (surfaceCrew.mode === 'hold') {
             if (assignment.vehicle === 'rover') {
@@ -1584,14 +1585,16 @@ export default function CesiumMap() {
         limitDeg: route.slope_limit_deg,
       })
 
-      // ---- Crash simulation (hazardous traverses) ----
-      // The rover loses control when the live grade passes the mission
-      // slope envelope (max(12°, limit + 0.25°), matching the backend
-      // danger classification) and falls on cliff-like drops; it then
-      // tumbles downhill with decaying bounces and arcs electrically.
-      // Thresholds are calibrated to real MOLA grades (the steepest Mars
-      // terrain reaches ~25° at MOLA resolution); the sparks are a
-      // dramatization.
+      // ---- Crash simulation (genuine cliffs only) ----
+      // The crewed SEV halts when the live grade passes the mission slope
+      // envelope (max(12°, limit + 0.25°), matching the backend danger
+      // classification). The auto-deployed rover does not topple on a bare
+      // over-limit grade; it only falls when it reaches a genuine cliff — a
+      // planner-classified cliff zone or terrain that has become cliff-steep
+      // (>= 35°). It then tumbles downhill with decaying bounces and arcs
+      // electrically. Thresholds are calibrated to real MOLA grades (the
+      // steepest Mars terrain reaches ~25° at MOLA resolution); the sparks are
+      // a dramatization.
       const rolloverGradeDeg = Math.max(
         CRASH.minRolloverGradeDeg,
         route.slope_limit_deg + CRASH.gradeOverLimitDeg,
@@ -1732,7 +1735,7 @@ export default function CesiumMap() {
           ? Math.max(1, totalKm * 1000 / (90 * SCOUT_CRUISE_MPS))
           : 1
         const wantsHalt = paused || controls.stopRequested
-        // Presentation dynamics stay bounded even for a 400 km preview.
+        // Presentation dynamics stay bounded even for a long traverse preview.
         const suspensionDt = wantsHalt && velocityMps === 0 ? 0 : dt * speedMult
         const ahead = sampleRoute(traverse, Math.min(1, lastT + 0.005 / Math.max(totalKm, 0.005)))
         const here = sampleRoute(traverse, lastT)
@@ -1892,17 +1895,21 @@ export default function CesiumMap() {
         // Crash triggers: beginCrash reports the failure and takes over the
         // loop — stepCrash owns every frame from the next one on.
         const absGrade = Math.abs(sample.gradeDeg)
+        // The crewed SEV never risks the crew: it halts at the slope envelope.
         if (vehicle === 'sev' && absGrade >= rolloverGradeDeg) {
           endDrive('risk-hold')
           return
         }
-        if (absGrade >= CRASH.fallGradeDeg) {
+        // The auto-deployed rover is a deliberate robotic approach, so it
+        // tolerates ordinary over-limit grades and only topples against a
+        // genuine landform: a planner-classified cliff zone (a near-vertical
+        // MOLA drop it can fall off or smash into), or terrain that has become
+        // cliff-steep. A bare over-limit grade is not a topple cause, so on an
+        // otherwise hazardous-but-navigable traverse the rover reaches the
+        // target. The topple only occurs when the user chose this unsafe route
+        // over the planner's safe traverse.
+        if (topplesAtCliff(absGrade, sample.distanceKm, dangers, CRASH.fallGradeDeg)) {
           beginCrash('fall', sample)
-          scoutFrame = requestAnimationFrame(step)
-          return
-        }
-        if (absGrade >= rolloverGradeDeg) {
-          beginCrash('rollover', sample)
           scoutFrame = requestAnimationFrame(step)
           return
         }

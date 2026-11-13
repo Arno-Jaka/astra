@@ -2,25 +2,30 @@
 
 ## Astronaut surface-science workflow
 
-Start with **Astronaut science mission**. The default objective is investigating
-Mount Sharp boxwork ridges for evidence of ancient groundwater, with NASA's
+Select a departure point and a destination on the map. ASTRA predicts both the
+**safest (slope-compliant)** traverse and the **hazardous direct** comparison for
+the chosen endpoints, then assigns a vehicle from the destination's safety:
+
+- **Crew-safe destination** — the crewed **Space Exploration Vehicle (SEV)**
+  drives the full traverse, regardless of distance, parks a short fixed standoff
+  from the target, and three astronauts (Finn, Rae, Fernando) walk or
+  Mars-gravity hop the final approach to the exact spot.
+- **Hazardous destination or robot-only task** — the SEV parks at the last safe
+  point before the hazard and a **rover is auto-deployed** to the target while
+  the crew remains beside the parked SEV.
+
+The default science objective is investigating Mount Sharp boxwork ridges for
+evidence of ancient groundwater, with NASA's
 [Curiosity Mastcam observation from May 22, 2025](https://science.nasa.gov/photojournal/curiosity-views-boxwork-patterns-at-a-distance/)
-(PIA26560). **Explore science region** frames Mount Sharp and enables Viking
-optical imagery with the MOLA slope overlay. The region coordinate is not a
-surveyed boxwork outcrop; choose a candidate science station using the source
-imagery and map context.
+(PIA26560). Destination safety is a regional MOLA slope assessment; georeferenced
+science experiment areas of interest will be added later.
 
-The mission panel combines **optical, topographic and atmospheric** context.
-REMS values retain their observation sol/date and age, are Gale-station-only,
-and show an explicit unavailable state if NASA's feed cannot be reached.
-
-Set a science objective, slope envelope, assumed walking pace, suit/equipment
-time allowance, science-stop time, reserve and total EVA budget. Select a
-departure/return point and a science destination. Both route alternatives,
-when available, get their own **crew round-trip estimate**, separate from rover
-simulation ETA. Return travel assumes retracing the outbound route. The route
-keeps a snapshot of its assumptions; after editing, use **Recalculate selected
-crew route**. A slope-compliant route may still exceed the EVA budget.
+Set the science objective, slope envelope, assumed walking pace, suit/equipment
+time allowance, science-stop time, reserve and total EVA budget under **Mission
+parameters** in the traverse plan. Both route alternatives, when available, keep
+a snapshot of the assumptions; after editing, use **Recalculate route**. The
+on-foot estimate covers only the final approach, because the SEV drives the
+traverse.
 
 Defaults are illustrative inputs, not NASA suit limits. Radiation, consumables,
 metabolic demand, soil traction and local obstacles are not modeled. See the
@@ -38,8 +43,9 @@ cyan and orange rings respectively (static when reduced motion is requested).
 
 Single-click anywhere on Mars (a site marker or open terrain) to select a start,
 then single-click a destination
-(1–400 km apart). No setup panel is needed; Escape cancels the selection.
-Routes default to a 15° slope limit, adjustable in the mission panel. Hover cards
+(at least 1 km apart). No setup panel is needed; Escape cancels the selection.
+Routes default to a 15° slope limit, adjustable under **Mission parameters** in
+the traverse plan. Hover cards
 still open only over dots or labels.
 Off-site endpoints show distance and compass bearing from the nearest site in
 ASTRA's curated catalog, e.g. “12.4 km NE (45°) from Gale Crater.” Bearings are
@@ -109,28 +115,36 @@ profile. Replies are spoken with a neural voice.
   pause, C recenter camera, Esc or the Stop button to end**. The route
   panel readouts, scrubber, and elevation-chart cursor track the rover
   live while it drives.
-- **Crash simulation on hazardous routes** — driving the direct route
-  replays its dangers: passing a steep zone raises an **amber slip-risk
-  banner**, and when the live grade passes the mission slope envelope
-  (max(12°, limit + 0.25°), matching the backend danger classification)
-  the rover **rolls over — tumbling downhill with decaying bounces,
-  then wrecking in blue electrical arcing** — jagged lightning-like
-  bolts flickering over the wreck, with point-like spark spatter
+- **Cliff topple on the chosen unsafe route** — driving the rejected direct
+  route replays its dangers: passing a steep zone raises an **amber slip-risk
+  banner**, and a genuine cliff makes the vehicle **topple — tumbling downhill
+  with decaying bounces, then wrecking in blue electrical arcing** — jagged
+  lightning-like bolts flickering over the wreck, with point-like spark spatter
   falling under Mars gravity — with the chase camera
-  staying on the wreck. The drive ends with a "scout lost"
+  staying on the wreck. A bare over-limit grade no longer topples the
+  auto-deployed rover: it tolerates ordinary over-limit terrain and reaches the
+  target on a hazardous-but-navigable traverse. It only falls at a
+  planner-classified **cliff** zone (or terrain that has become cliff-steep,
+  ≥ 35°) — a true near-vertical landform it can fall off or smash into. The
+  crewed SEV never takes the risk at all: it halts at the slope envelope and
+  holds the crew. The drive ends with a "scout lost"
   report and recovers onto the safe route. This is a dramatization of
-  why the planner avoids over-limit terrain, not a physical hazard
+  why the planner avoids cliffs, not a physical hazard
   model — the grades come from ~2 km MOLA sampling (regional estimates),
   and since combustion cannot happen in Mars' thin CO₂ atmosphere the
   wreck is shown as electrical discharge from its power bus rather
   than fire.
-- **Vehicle selection and crew mission** — ASTRA picks the robotic rover for
-  robot-only tasks (high physical risk, strict contamination limits, repetitive
-  work) or hazardous terrain, and the crewed Space Exploration Vehicle (SEV)
-  otherwise. An SEV traverse stages short of the target, three astronauts
-  (Finn, Rae, Fernando) disembark, and they either walk the final approach or
-  hold while the rover is deployed. Walking and jumping follow Mars gravity
-  (3.71 m/s²).
+- **Vehicle selection and crew mission** — ASTRA predicts the safest
+  (slope-compliant) and hazardous traverses for the chosen start and destination,
+  then picks the vehicle from destination safety. A crew-safe destination sends
+  the crewed **Space Exploration Vehicle (SEV)** the full traverse (any distance)
+  to park a fixed standoff from the target, where three astronauts (Finn, Rae,
+  Fernando) hop out of the SEV and walk or Mars-gravity hop the final approach
+  facing their direction of travel, each at an independent pace and hop timing
+  with uneven-but-bounded spacing. A hazardous destination
+  (or a robot-only task: high physical risk, strict contamination limits,
+  repetitive work) parks the SEV at the last safe point and **auto-deploys the
+  rover** to the target. Walking and jumping follow Mars gravity (3.71 m/s²).
 - **Layers** — a layer panel toggles NASA base imagery (MOLA hillshade or
   Viking MDIM 2.1) and a **slope-hazard overlay** (green→red at
   5/10/15/25°) computed server-side from the MOLA DEM, plus the 21 gazetteer
@@ -216,34 +230,43 @@ failure training remain explicitly distinguished.
 
 ### Vehicle selection and surface crew
 
-Before launch, ASTRA assigns a vehicle from the route and the task profile
-(`frontend/src/map/taskAssignment.ts`). The **robotic rover** is used when the
-task carries a flagged constraint — high physical risk, strict contamination
-limits, or repetitive work that would waste crew time — or when the route is not
-slope-compliant, exceeds the grade limit, or is marked over-limit / rollover /
-cliff. Otherwise the **Space Exploration Vehicle (SEV)** carries the crew. The
+ASTRA predicts the safest (slope-compliant) and hazardous direct traverses
+whenever a start and destination are chosen, and assigns a vehicle from the
+destination's safety and the task profile (`frontend/src/map/taskAssignment.ts`).
+The **robotic rover** is used when the destination traverse is not
+slope-compliant, exceeds the grade limit, or carries an over-limit / rollover /
+cliff hazard, or when the task carries a flagged constraint — high physical
+risk, strict contamination limits, or repetitive work that would waste crew
+time. Otherwise the **Space Exploration Vehicle (SEV)** carries the crew. The
 route panel names the choice and the reason.
 
-For an SEV traverse the mission is staged. The SEV drives to a terrain-based
-**staging candidate** short of the target, three astronauts disembark, and they
-either **walk the final approach** on foot (when no robot-only criterion applies)
-or **hold beside the parked SEV** while the rover is deployed to the target (when
-the task is unsuitable for crew).
+For a **crew-safe** destination the SEV drives the full traverse, regardless of
+distance, and parks a fixed standoff (≈200 m) from the target; the three
+astronauts **hop out of the SEV** (Jump → Jump_Land) and **walk or hop the final
+approach**, facing the direction of travel. For a **hazardous**
+destination the SEV parks at the last safe point before the hazard and the
+**rover is auto-deployed** to the target while the crew remains beside the parked
+SEV.
 
-Staging is a regional terrain candidate, never a certified landing or
+Parking is a regional terrain candidate, never a certified landing or
 contamination-cleared point: the plan rejects missing terrain, never carries the
-SEV through a known hazard, and keeps the crew aboard if no candidate exists. The
-crew's final approach halts and reports if newly rendered terrain exceeds the
+vehicle through a known hazard, and keeps the crew aboard if no candidate exists.
+The crew's final approach halts and reports if newly rendered terrain exceeds the
 mission grade limit.
 
 The supplied astronaut rigs play `Idle`, `Walk`, `Jump`, `Jump_Idle` and
-`Jump_Land`. Mars gravity (3.71 m/s²) drives both cues: the walk cadence is
+`Jump_Land`. Mars gravity (3.71 m/s²) drives the cues: the walk cadence is
 slowed by √(3.71/9.81) relative to Earth, and a hop follows a ballistic arc
-(`2·v₀/g`, v₀ = 1.4 m/s, ≈ 0.75 s aloft) with the exported Earth-style jump root
-motion locked out so only one vertical impulse is applied. Use the HUD's
-**Crew hop · Mars gravity** button during the final approach. The rigs, walk
-cadence and jump are illustrative; suits, physiology and consumables are not
-modelled.
+(`2·v₀/g`, v₀ = 1.4 m/s, ≈ 0.75 s aloft) whose longer air time also carries the
+crew farther per hop, with the exported Earth-style jump root motion locked out
+so only one vertical impulse is applied. The crew is never in lockstep: each
+astronaut has a fixed stride factor, a lateral formation offset, a staggered
+hop schedule and a staggered exit, and the group is kept together with a
+bounded trailing gap so spacing stays uneven without spreading out. Each rig is
+oriented to face its direction of travel, and steps out to the side of the
+parked SEV with the `Jump` → `Jump_Land` clips. Use the HUD's **Crew hop · Mars gravity** button
+during the final approach. The rigs, walk cadence and jump are illustrative;
+suits, physiology and consumables are not modelled.
 
 ## Stack
 
@@ -324,23 +347,27 @@ Open `http://localhost:5173`. Vite proxies `/api` and `/ws` to port 8000.
    **Traceroute preview** slider to walk a marker (and the camera) along
    the 3D route; the elevation chart tracks the scrub position and shades
    danger zones. Ask for 5 degrees to see the longer detour; a 3,767 km
-   request is rejected (400 km limit).
-4. **Simulation + crash** — click **▶ Play traverse** for the game-style
-   chase camera: drag to orbit the rover, scroll to zoom, ↑/↓ to change
-   speed, Space to pause, C to recenter, Esc or **■ Stop scout** to end.
-   The HUD under the view shows live telemetry, and the elevation chart
-   cursor follows the rover. **With "Direct" selected, play the traverse**:
-   passing steep zones raises the amber slip-risk banner, and at the
-   rollover zone the rover flips, tumbles downhill, and wrecks in
-   flickering blue electrical arcs — ending in
-   a "scout lost" report that recovers onto the safe route. (On the safe
-   route it completes without incident; a 15° Gale→Sharp request puts the
-   rollover about 0.5 km in.)
-5. **Crew mission** — with a task that has no robot-only criterion, start the
-   SEV mission: the three astronauts drive to the staging point, disembark, and
-   walk the final approach; use **Crew hop · Mars gravity** to see the slowed
-   Mars-gravity gait and ballistic hop. Flag a robot-only task (for example
-   repetitive work) to see the crew hold while the rover performs the approach.
+    request is no longer rejected by an arbitrary distance cap, but global
+    detours remain approximate and may not be found.
+4. **Crew mission** — choose a crew-safe destination (within the slope limit):
+   click **▶ Start crew mission · SEV to destination** and watch the SEV drive the
+   full traverse to park near the target; the three astronauts hop out and walk
+   the final approach facing their direction of travel, each at an independent
+   pace and hop timing; use **Crew hop · Mars gravity** to see the slowed
+   Mars-gravity gait and ballistic hop. Then choose a hazardous destination (or
+   flag a robot-only task, for example repetitive work): the button reads **SEV
+   parks + rover deploy**, the SEV parks at the last safe point, and the rover
+   performs the approach while the crew holds. The rover completes an
+   over-limit-but-navigable traverse; it only topples at a genuine cliff, and
+   only because the unsafe route was selected. During the drive you can drag to
+   orbit, scroll to zoom, use ↑/↓ for speed, Space to pause, C to recenter, and
+   Esc or **■ Stop** to end.
+5. **Cliff topple** — with the **Direct** traverse selected for a hazardous
+   destination, play the rover deployment: passing steep zones raises the amber
+   slip-risk banner, and at a cliff zone the rover flips, tumbles downhill, and
+   wrecks in flickering blue electrical arcs — ending in a "scout lost" report
+   that recovers onto the safe route. (On the safe route it completes without
+   incident.)
 6. **Layers** — switch base imagery to Viking MDIM; toggle the slope-hazard
    overlay and read the color legend; note the live REMS station pin at
    Bradbury Landing.
@@ -371,8 +398,11 @@ computes measurements.
 
 ## Known limitations
 
-- Route planning currently supports endpoints 1–400 km apart. Global,
-  multi-resolution route planning remains future work.
+- Route planning has no arbitrary maximum endpoint distance; endpoints must be
+  at least 1 km apart. Long routes use bounded regional-resolution sampling and
+  a limited A* search, so a compliant detour may not be found even when one
+  exists. Global, multi-resolution and dateline/polar-aware routing remain
+  future work; long SEV trips are illustrative previews, not certified travel.
 - The nearest-site reference is selected from ASTRA's curated catalog, not the
   complete IAU gazetteer. Bearings/distances are computed geometry, not new NASA
   observations. The app reports slope compliance, not a globally safest route.
@@ -394,18 +424,20 @@ computes measurements.
   suspension model and tilts with the local slope, but wheels do not have
   per-wheel contact physics or a drive cycle animation. The chase-camera
   orbit control is mouse-only (no touch support).
-- The crash simulation is a dramatization, not a hazard model: the
-  rollover trigger is the mission slope envelope (max(12°, limit + 0.25°))
-  computed from ~2 km-sampled MOLA grades, the tumble uses an approximate
+- The cliff topple is a dramatization, not a hazard model: the rover only
+  topples at a planner-classified cliff zone (or terrain that has become
+  cliff-steep, ≥ 35°) computed from ~2 km-sampled MOLA grades, the tumble uses
+  an approximate
   along-route rigid-body solver, and the electrical sparks are a particle effect —
   combustion cannot happen in Mars' thin CO₂ atmosphere, so the wreck
   is shown arcing electrically instead of burning.
 - Meter-scale ridges and potholes in the close-up simulation are synthetic;
   a HiRISE/CTX DTM overlay would be needed for measured meter-scale terrain.
-- The astronaut crew, disembarkation staging and Mars-gravity gait are
-  illustrative: staging is a regional MOLA candidate, not a certified landing or
-  contamination-cleared point, and suit physiology, consumables, local obstacle
-  avoidance and validated radiation assessment are not modelled.
+- The astronaut crew, SEV parking and Mars-gravity gait are illustrative: parking
+  is a regional MOLA candidate, not a certified landing or contamination-cleared
+  point, and suit physiology, consumables, local obstacle avoidance and validated
+  radiation assessment are not modelled. Georeferenced science experiment areas of
+  interest are not yet defined.
 
 ## Checks
 

@@ -18,6 +18,30 @@ export function terrainSupport(x: number, pitch: number, groundAt: (x: number) =
   return floor
 }
 
+/** Danger-zone shape the topple policy needs (a subset of a route danger). */
+export type CliffZone = { type: string; distance_km: number; span_km: number }
+
+/** A deployed rover tolerates ordinary over-limit grades; it only topples
+ * against a genuine landform: a planner-classified `cliff` zone (a
+ * near-vertical MOLA drop it can fall off or smash into) or terrain that has
+ * become cliff-steep (>= fallGradeDeg). A bare over-limit grade is not a
+ * topple cause. */
+export function topplesAtCliff(
+  absGradeDeg: number,
+  distanceKm: number,
+  dangers: CliffZone[],
+  fallGradeDeg: number,
+): boolean {
+  return (
+    absGradeDeg >= fallGradeDeg ||
+    dangers.some(
+      (zone) =>
+        zone.type === 'cliff' &&
+        Math.abs(distanceKm - zone.distance_km) <= zone.span_km / 2 + 0.05,
+    )
+  )
+}
+
 /** 2-D rigid-body approximation in the along-route vertical plane.
  * Fixed substeps, ballistic flight, terrain contact, inelastic impulses and
  * Coulomb friction replace the former timed sine-wave bounce/slide script.

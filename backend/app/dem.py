@@ -18,7 +18,6 @@ HEIGHT = 2880
 PPD = 16.0
 NODATA = -32768
 MARS_RADIUS_KM = 3396.19
-MAX_ROUTE_KM = 400.0
 PACE_M_S = 1.0
 # Danger classification thresholds along a traverse (degrees of grade).
 # 10 deg is a steep grade (slip risk for a rover); grades beyond the mission
@@ -522,13 +521,6 @@ def plan(
     end_lat: float,
     max_slope_deg: float,
 ) -> dict[str, Any]:
-    direct_km = _great_circle_km(start_lon, start_lat, end_lon, end_lat)
-    if direct_km > MAX_ROUTE_KM:
-        raise ValueError(
-            f"Route is {direct_km:.0f} km; the route planner supports up to "
-            f"{MAX_ROUTE_KM:.0f} km."
-        )
-
     direct = _finalize(
         _resample(start_lon, start_lat, end_lon, end_lat, step_km=0.5)
     )

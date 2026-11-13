@@ -85,7 +85,7 @@ def coordinate_route(request: RouteRequest) -> dict[str, Any]:
     if distance < 0.001:
         raise HTTPException(400, "The same location cannot be both start and destination.")
     if distance < 1:
-        raise HTTPException(400, "Choose locations at least 1 km apart (maximum 400 km).")
+        raise HTTPException(400, "Choose locations at least 1 km apart.")
     try:
         result = dem.plan(**request.model_dump(exclude={"crew"}))
         resolution = dem.pixel_size_km()

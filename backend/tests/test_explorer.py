@@ -50,7 +50,21 @@ def test_route_input_and_distance_limits():
     data = {"start_lon": 0, "start_lat": 0, "end_lon": 0, "end_lat": 0}
     assert client.post("/routes/plan", json=data).status_code == 400
     assert client.post("/routes/plan", json={**data, "max_slope_deg": 0}).status_code == 422
-    assert client.post("/routes/plan", json={**data, "end_lon": 20}).status_code == 400
+    assert client.post("/routes/plan", json={**data, "end_lon": 0.005}).status_code == 400
+
+
+def test_route_beyond_400_km_is_planned():
+    # About 592 km at the equator; the former regional cap rejected this.
+    with patch("app.dem.elevation_m", return_value=-4500), patch("app.dem.pixel_size_km", return_value=1.85):
+        response = client.post("/routes/plan", json={
+            "start_lon": 0, "start_lat": 0, "end_lon": 10, "end_lat": 0,
+        })
+    assert response.status_code == 200
+    route = response.json()
+    assert route["distance_km"] > 400
+    assert route["slope_compliant"] is True
+    assert len(route["coordinates"]) == len(route["profile"])
+    assert route["profile"][-1]["distance_km"] > 400
 
 
 def test_background_is_sourced_and_duplicate_endpoints_are_rejected():

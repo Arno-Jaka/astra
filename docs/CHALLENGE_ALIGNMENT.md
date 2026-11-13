@@ -7,8 +7,8 @@ obstacle-avoiding routes. This document assesses that scope, not event eligibili
 
 | Objective/guidance | Implementation | Scope and remaining gap |
 | --- | --- | --- |
-| An interface for a Mars astronaut | Astronaut science mission panel, site search, arbitrary-point selection, sourced inspection and route comparison | Exploration/planning prototype; rover simulation is a supplementary visualization |
-| Identify scientific goals and an exploration area | Editable science objective; default ancient-groundwater/boxwork investigation in Gale/Mount Sharp; observation tasks and NASA Mastcam context | Regional focus only. No fabricated precise boxwork station coordinates or verified mineral detections |
+| An interface for a Mars astronaut | Site search, arbitrary-point selection, sourced inspection, safe/hazardous route comparison and a destination-driven SEV/rover mission | Exploration/planning prototype; rover simulation is a supplementary visualization |
+| Identify scientific goals and an exploration area | Editable science objective; default ancient-groundwater/boxwork investigation in Gale/Mount Sharp; NASA Mastcam context | Regional focus only. No fabricated precise boxwork station coordinates or verified mineral detections; georeferenced science experiment areas of interest are future work |
 | Use NASA data and tools | Mars Trek/Viking, MGS MOLA from PDS, MSL Mastcam and REMS, source links | IAU/USGS coordinates provide additional named-site context; geometry and EVA timing are derived calculations |
 | Consider at least three kinds of data | Optical images, topographic terrain/slopes, atmospheric station observations in one mission workflow | Atmospheric feed is Gale-only, dated, and may be unavailable. No global weather layer or forecast |
 | Prioritize crew safety | Slope-compliance comparison, danger annotations, round-trip time allocation and reserve, explicit unknown hazards | Regional slope assessment and assumed time feasibility are not evidence of overall safety |
@@ -17,13 +17,15 @@ obstacle-avoiding routes. This document assesses that scope, not event eligibili
 | Consider radiation/space weather | The mission/route assessment explicitly identifies radiation as unassessed | Radiation observations, alerts, dose/exposure integration and validated limits are not implemented |
 
 Beyond that mapping, ASTRA selects between a crewed Space Exploration Vehicle
-(SEV) and a robotic rover: robot-only task criteria (high physical risk, strict
-contamination limits, repetitive work) or hazardous terrain route the rover,
-otherwise the crew drives and disembarks. The SEV stages at a regional terrain
-candidate short of the target; the three-person crew then walks the final
-approach or holds while the rover is deployed. Staging is not a certified
-landing/contamination-clear point, and the robot-only criteria are task policies,
-not validated sterility or contamination models.
+(SEV) and a robotic rover from destination safety and robot-only task criteria
+(high physical risk, strict contamination limits, repetitive work). A crew-safe
+destination sends the SEV the full traverse to park a fixed standoff from the
+target, where the three-person crew hops out and walks or hops the final approach
+facing the direction of travel at independent paces; a hazardous
+destination parks the SEV at the last safe point and auto-deploys the rover to
+the target. Parking is not a certified landing/contamination-clear point, and the
+robot-only criteria are task policies, not validated sterility or contamination
+models.
 
 ## Science source
 
@@ -35,8 +37,12 @@ NASA/JPL-Caltech/MSSS. It is science context, not a georeferenced obstacle overl
 
 ## Crew time calculation
 
+The SEV drives the traverse, so the crew's time calculation now covers only the
+**on-foot final approach** from the parked SEV to the target:
+
 ```
-outbound_hours = route_distance_km × 1000 / assumed_pace_m_s / 3600
+approach_km = standoff between parked SEV and target (≈0.2 km)
+outbound_hours = approach_km × 1000 / assumed_pace_m_s / 3600
                  × (1 + suit_equipment_time_allowance_pct / 100)
 return_hours = outbound_hours
 planned_hours = outbound_hours + return_hours + science_minutes/60 + reserve_minutes/60
@@ -44,24 +50,28 @@ budget_margin_hours = EVA_budget_hours - planned_hours
 ```
 
 The user supplies all mobility/time assumptions. Return follows the same path.
-The longer slope-compliant detour and shorter hazardous route each receive their
-own time estimate. Passing the time check does not override a failed slope check.
-An assumption snapshot travels with the route; edits require recalculation.
+When the rover performs the approach, there is no on-foot leg. Passing the time
+check does not override a failed slope check. An assumption snapshot travels with
+the route; edits require recalculation.
 
 ## Suggested demonstration
 
-1. Open the astronaut mission panel and explain the boxwork science objective.
+1. Explain the boxwork science objective and the destination-driven vehicle
+   choice: a crew-safe destination uses the SEV, a hazardous one parks the SEV and
+   deploys the rover.
 2. Frame Mount Sharp; compare optical imagery with MOLA slopes. Inspect a site.
-3. Show the dated Gale station report (or its honest unavailable state).
-4. Choose a departure point and a candidate science destination; compare routes.
-5. Show how a long slope-compliant route can exceed the crew time budget.
-6. Start an SEV crew mission and explain the vehicle choice: the three astronauts
-   disembark at staging and walk the final approach (or hold while the rover is
-   deployed for a robot-only task). Use the Mars-gravity hop; note that staging is
-   a regional terrain candidate, not a certified landing or contamination-clear
-   point.
-7. Modify pace/suit allowance/reserve, recalculate, and explain which assessments
-   changed and which hazards remain unmeasured.
+3. Show the dated Gale station report (or its honest unavailable state) from the
+   conditions card.
+4. Choose a departure point and a candidate science destination; compare the
+   safest and hazardous routes.
+5. Show how the SEV drives the full traverse to a crew-safe destination, parks,
+   and the three astronauts hop out and walk the final approach facing their
+   direction of travel; use the Mars-gravity hop.
+   Then show a hazardous destination: the SEV parks at the last safe point and the
+   rover is auto-deployed. Note that parking is a regional terrain candidate, not a
+   certified landing or contamination-clear point.
+6. Modify pace/suit allowance/reserve under Mission parameters, recalculate, and
+   explain which assessments changed and which hazards remain unmeasured.
 
 Tests cover input validation, round-trip/reserve arithmetic, distinct alternative
 distances, independence of slope/time checks, source/context availability, browser

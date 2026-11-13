@@ -20,10 +20,10 @@ export function assignVehicle(terrain: TerrainAssessment, slopeLimit: number, ta
   const vehicle: VehicleKind = reasons.length ? 'rover' : 'sev'
   return {
     vehicle, label: vehicle === 'rover' ? 'Robotic rover' : 'Space Exploration Vehicle',
-    reasons: reasons.length ? reasons : ['No robot-only task criteria or severe regional terrain hazards identified'],
+    reasons: reasons.length ? reasons : ['Destination is crew-safe (within the slope envelope) with no robot-only task criteria'],
     taskExecutor: vehicle === 'rover' ? 'rover' as const : 'crew' as const,
-    futureHandoff: vehicle === 'rover'
-      ? 'Future astronaut workflow: hold crew/SEV at a separately verified staging point and deploy the rover to the target.'
-      : 'Future astronaut workflow: park the SEV at a verified access point and let astronauts approach the target.',
+    handoff: vehicle === 'rover'
+      ? 'The SEV carries the crew to the last safe point, parks, and the rover is auto-deployed to the target.'
+      : 'The SEV drives the full traverse to the destination and parks nearby; the crew walks or hops the final approach.',
   }
 }

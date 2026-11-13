@@ -5,7 +5,6 @@ import RoutePanel from './components/RoutePanel'
 import SurvivalBriefingPanel from './components/SurvivalBriefingPanel'
 import CesiumMap from './map/CesiumMap'
 import FloatingPanel from './components/FloatingPanel'
-import CrewMissionPanel from './components/CrewMissionPanel'
 import { useAppStore } from './store/appStore'
 import { speak, stopSpeaking } from './tts'
 import { connectCommands } from './ws/commandChannel'
@@ -16,7 +15,7 @@ const WELCOME: ChatMessage = {
   id: 0,
   role: 'assistant',
   content:
-    'ASTRA online. Plan a Mars surface-science excursion using the Astronaut science mission panel. Set a science objective and crew assumptions, then select departure and science points on the map. I can also fly to sites, retrieve Gale REMS reports and explain MOLA route hazards.',
+    'ASTRA online. Select a departure point and a destination on the map; ASTRA predicts the safest and hazardous traverses and assigns a vehicle. A crew-safe destination sends the Space Exploration Vehicle all the way, with three astronauts walking or hopping the final approach; a hazardous destination parks the SEV nearby and auto-deploys a rover. Adjust mission parameters in the traverse plan. I can also fly to sites, retrieve Gale REMS reports and explain MOLA route hazards.',
 }
 
 export default function App() {
@@ -106,7 +105,6 @@ export default function App() {
       </FloatingPanel>
 
       <main>
-        <CrewMissionPanel />
         <FloatingPanel id="console" title="Mission console" width={420} initial={{ left: 16, bottom: 16 }}>
           <ChatPanel
             messages={messages}

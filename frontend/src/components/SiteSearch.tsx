@@ -67,7 +67,7 @@ export default function SiteSearch({ endpoints, busy, onSelect, onReset }: {
           <button disabled={busy || same(endpoints.end, site)} onClick={() => onSelect(site, 'start')} className="rounded border border-cyan-300/40 bg-cyan-400/10 px-3 py-2 text-cyan-200 disabled:opacity-30">Set start</button>
           <button disabled={busy || same(endpoints.start, site)} onClick={() => onSelect(site, 'end')} className="rounded border border-orange-300/40 bg-orange-400/10 px-3 py-2 text-orange-200 disabled:opacity-30">Set destination</button>
         </div>
-        <p className="text-neutral-400">Choose distinct sites 1–400 km apart. Routes are compared automatically using a {slopeLimit}° slope limit and the crew mission assumptions.</p>
+        <p className="text-neutral-400">Choose distinct sites at least 1 km apart. Long traverses are regional previews, not certified drive plans. Routes are compared automatically using a {slopeLimit}° slope limit and the crew mission assumptions.</p>
         <p className="text-neutral-400">Or click anywhere on Mars. Off-site points show their distance and bearing from the nearest mapped site (north = 0°, east = 90°).</p>
       </div>}
     </div>}

@@ -20,7 +20,7 @@ INSTRUCTIONS = [
     "Only report a route after the tool returns ok=true.",
     "If a tool returns ok=false, explain the error briefly.",
     "Supported sites: Gale Crater, Jezero Crater, Mount Sharp (Aeolis Mons), and other marked Mars sites.",
-    "Routes are local only; the planner supports up to 400 km.",
+    "Long traverses are regional MOLA-based previews, not certified drive plans; do not claim an arbitrary distance limit.",
     "Never invent coordinates, weather, science data, or route statistics.",
     "Keep replies under 120 words; use short hyphen bullets and never use markdown tables.",
 ]

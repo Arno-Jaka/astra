@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { transformWithOxc } from 'vite'
 const { code } = await transformWithOxc(await readFile(new URL('../src/map/crashPhysics.ts', import.meta.url), 'utf8'), 'crashPhysics.ts')
-const { advanceCrash, bodySupport, terrainSupport, MARS_GRAVITY } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`)
+const { advanceCrash, bodySupport, terrainSupport, topplesAtCliff, MARS_GRAVITY } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`)
 const body = (overrides = {}) => ({ x: 0, z: 1.05, vx: 0, vz: 0, pitch: 0, spin: 0, elapsed: 0, settledFor: 0, impacts: 0, ...overrides })
 for (const fps of [30, 60, 120]) {
   const flight = body({ z: 100, vx: 2, vz: 7.5 })
@@ -27,4 +27,14 @@ for (const fps of [30, 60, 120]) {
     assert.ok(tumble.z >= terrainSupport(tumble.x, tumble.pitch, slope) - 1e-8)
   }
 }
-console.log('Passed: Mars-gravity ballistics, conserved airborne momentum, jet landing, hull contact, settling, slope-dependent tumble direction.')
+// Topple policy: a deployed rover tolerates over-limit grades and only topples
+// at a genuine cliff (a cliff danger zone or cliff-steep terrain).
+const cliffZone = [{ type: 'cliff', distance_km: 1.2, span_km: 0.4 }]
+const rolloverZone = [{ type: 'rollover', distance_km: 1.2, span_km: 0.4 }]
+assert.equal(topplesAtCliff(20, 0.5, cliffZone, 35), false, 'a bare over-limit grade must not topple the rover')
+assert.equal(topplesAtCliff(20, 0.5, rolloverZone, 35), false, 'an over-envelope rollover zone must not topple the rover')
+assert.equal(topplesAtCliff(6, 1.2, cliffZone, 35), true, 'a cliff zone must topple the rover')
+assert.equal(topplesAtCliff(6, 1.0, cliffZone, 35), true, 'the cliff edge tolerance must topple the rover')
+assert.equal(topplesAtCliff(6, 0.9, cliffZone, 35), false, 'outside the cliff zone must not topple the rover')
+assert.equal(topplesAtCliff(36, 0.5, [], 35), true, 'cliff-steep terrain must topple the rover even without a zone')
+console.log('Passed: Mars-gravity ballistics, conserved airborne momentum, jet landing, hull contact, settling, slope-dependent tumble direction, and the cliff-only topple policy.')

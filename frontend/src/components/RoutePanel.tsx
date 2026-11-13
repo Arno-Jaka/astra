@@ -1,10 +1,13 @@
+import { useState } from 'react'
 import { sampleRoute } from '../map/routePath'
 import { useAppStore } from '../store/appStore'
 import type { RouteData, RouteDanger } from '../store/appStore'
 import { useDriveStore } from '../store/driveStore'
+import { useMissionStore, type CrewProfile } from '../store/missionStore'
+import { dispatchLocalCommand } from '../ws/commandChannel'
 import ElevationProfileChart from './ElevationProfileChart'
 import { assignVehicle } from '../map/taskAssignment'
-import { planCrewMission } from '../map/crewMission'
+import { planCrewMission, formatDistance } from '../map/crewMission'
 
 function stat(value: number, suffix = '') {
   return `${Math.round(value).toLocaleString()}${suffix}`
@@ -16,6 +19,26 @@ const DANGER_DOT: Record<RouteDanger['type'], string> = {
   cliff: 'bg-red-500',
 }
 
+const TASK_FLAGS = [
+  ['high_physical_risk', 'High physical risk'],
+  ['strict_contamination', 'Strict contamination limits'],
+  ['repetitive_work', 'Tedious / repetitive work'],
+] as const
+
+const ASSUMPTION_FIELDS: {
+  key: keyof Omit<CrewProfile, 'objective' | 'high_physical_risk' | 'strict_contamination' | 'repetitive_work'>
+  label: string
+  min: number
+  max: number
+  step: number
+}[] = [
+  { key: 'pace_m_s', label: 'Assumed walking pace (m/s)', min: 0.1, max: 2, step: 0.1 },
+  { key: 'mobility_allowance_pct', label: 'Suit/equipment extra travel time (%)', min: 0, max: 300, step: 10 },
+  { key: 'science_minutes', label: 'Science stop (minutes)', min: 0, max: 480, step: 5 },
+  { key: 'reserve_minutes', label: 'Return reserve (minutes)', min: 0, max: 480, step: 5 },
+  { key: 'budget_hours', label: 'Total EVA time budget (hours)', min: 0.5, max: 24, step: 0.5 },
+]
+
 export default function RoutePanel({ route }: { route: RouteData }) {
   const phase = useAppStore((state) => state.routePhase)
   const previewT = useAppStore((state) => state.previewT)
@@ -26,6 +49,12 @@ export default function RoutePanel({ route }: { route: RouteData }) {
   const stopDrive = useDriveStore((state) => state.stop)
   const stopping = useDriveStore((state) => state.stopRequested)
   const crash = useDriveStore((state) => state.crash)
+  const crewProfile = useMissionStore((state) => state.crew)
+  const slopeLimit = useMissionStore((state) => state.slopeLimit)
+  const updateCrew = useMissionStore((state) => state.update)
+  const setSlopeLimit = useMissionStore((state) => state.setSlopeLimit)
+  const [working, setWorking] = useState(false)
+  const [paramError, setParamError] = useState('')
 
   // Everything below reflects the selected traverse: the safe (planner)
   // route by default, the hazardous direct route for comparison.
@@ -40,10 +69,39 @@ export default function RoutePanel({ route }: { route: RouteData }) {
   const crewMessage = useDriveStore(state => state.crewMessage)
   const mission = planCrewMission(selected, route.slope_limit_deg, assignment.vehicle)
 
+  // On-foot leg of the new workflow: the SEV parks nearby and the crew walks
+  // (or hops) the remaining standoff. A rover mission keeps the crew aboard.
+  const approach = (() => {
+    const profile = crew?.profile
+    if (!profile || assignment.vehicle !== 'sev' || !mission.available) return null
+    const allowance = 1 + profile.mobility_allowance_pct / 100
+    const outboundHours = mission.standoffM / profile.pace_m_s / 3600 * allowance
+    const plannedHours = outboundHours * 2 + (profile.science_minutes + profile.reserve_minutes) / 60
+    return {
+      outboundHours,
+      returnHours: outboundHours,
+      plannedHours,
+      marginHours: profile.budget_hours - plannedHours,
+      withinBudget: plannedHours <= profile.budget_hours,
+    }
+  })()
+
   const sample = sampleRoute(selected, previewT)
   const headingDeg = Math.round(
     (((sample.bearing * 180) / Math.PI + 360) % 360),
   )
+
+  const recalculate = async () => {
+    setWorking(true)
+    setParamError('')
+    try {
+      await dispatchLocalCommand('replan_crew_route', {})
+    } catch (cause) {
+      setParamError(cause instanceof Error ? cause.message : 'Recalculation failed')
+    } finally {
+      setWorking(false)
+    }
+  }
 
   return (
     <section className="rounded-xl border border-white/10 bg-black/65 p-4 shadow-2xl backdrop-blur-xl">
@@ -81,9 +139,10 @@ export default function RoutePanel({ route }: { route: RouteData }) {
         <ul className="list-inside list-disc">{assignment.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul>
         <p>Three-person crew: Finn, Rae &amp; Fernando.</p>
         <p>{mission.reason}</p>
-        <p className="text-neutral-400">Simulated staging based on regional slopes; local obstacles and contamination clearance are unassessed. Mars gravity: 3.71 m/s². Walking pace uses the crew assumptions; gait timing is illustrative.</p>
+        <p>{assignment.handoff}</p>
+        <p className="text-neutral-400">Both the safest (slope-compliant) and hazardous traverses are predicted for the chosen start and destination; the assignment follows the selected traverse. Mars gravity: 3.71 m/s². Vehicle effects and parking are simulated; local obstacles and contamination clearance are unassessed.</p>
         <p aria-live="polite">Mission: {missionPhase.replaceAll('-', ' ')}{crewMessage ? ` · ${crewMessage}` : ''}</p>
-        {completion === 'arrived' && <p className="text-cyan-200">{assignment.vehicle === 'rover' ? 'Rover reached target; crew remains beside the parked SEV.' : 'All three crew members reached the target area; SEV remains at staging.'}</p>}
+        {completion === 'arrived' && <p className="text-cyan-200">{assignment.vehicle === 'rover' ? 'Rover reached the target; the crew remains beside the parked SEV.' : 'All three crew members reached the target area; the SEV is parked nearby.'}</p>}
         {completion === 'risk-hold' && <p className="text-amber-200">Mission held. Reassess the route before proceeding.</p>}
       </section>
 
@@ -184,15 +243,26 @@ export default function RoutePanel({ route }: { route: RouteData }) {
         </div>
       </dl>
 
-      {crew ? <section aria-label="Crew EVA assessment" className="mt-3 space-y-2 rounded border border-cyan-300/25 p-3 text-xs">
-        <h3 className="font-semibold text-cyan-200">On-foot EVA reference · scenario estimate</h3>
+      {crew ? <section aria-label="Crew final approach" className="mt-3 space-y-2 rounded border border-cyan-300/25 p-3 text-xs">
+        <h3 className="font-semibold text-cyan-200">On-foot final approach · scenario estimate</h3>
         <p>{crew.profile.objective}</p>
-        <p>Destination is a user-selected candidate science station, not a verified outcrop.</p>
-        <div className="grid grid-cols-2 gap-2"><p>Outbound: {crew.outbound_hours.toFixed(2)} h</p><p>Return: {crew.return_hours.toFixed(2)} h</p><p>Science: {crew.profile.science_minutes} min</p><p>Reserve: {crew.profile.reserve_minutes} min</p></div>
-        <p>Round-trip allocation: <strong>{crew.planned_hours.toFixed(2)} / {crew.profile.budget_hours} h</strong></p>
-        <p className={crew.within_budget ? 'text-cyan-200' : 'text-red-300'}>{crew.within_budget ? `Within assumed time budget (${crew.budget_margin_hours.toFixed(2)} h remaining)` : `Exceeds assumed time budget by ${Math.abs(crew.budget_margin_hours).toFixed(2)} h — shorten the excursion or revise the scenario`}</p>
+        <p>Destination is a user-selected candidate science station, not a verified outcrop. Science experiment areas of interest will be added later.</p>
+        {assignment.vehicle === 'sev' && approach ? (
+          <>
+            <div className="grid grid-cols-2 gap-2">
+              <p>On foot: {formatDistance(mission.standoffM)}</p>
+              <p>Assumed pace: {crew.profile.pace_m_s} m/s</p>
+              <p>Outbound: {approach.outboundHours.toFixed(2)} h</p>
+              <p>Return: {approach.returnHours.toFixed(2)} h</p>
+            </div>
+            <p>Round-trip allocation: <strong>{approach.plannedHours.toFixed(2)} / {crew.profile.budget_hours} h</strong> · includes {crew.profile.science_minutes} min science and {crew.profile.reserve_minutes} min reserve</p>
+            <p className={approach.withinBudget ? 'text-cyan-200' : 'text-red-300'}>{approach.withinBudget ? `Within assumed time budget (${approach.marginHours.toFixed(2)} h remaining)` : `Exceeds assumed time budget by ${Math.abs(approach.marginHours).toFixed(2)} h — revise the scenario`}</p>
+          </>
+        ) : (
+          <p className="text-amber-200">The selected traverse is not crew-safe: the SEV parks at the last safe point and the rover performs the final approach, so there is no on-foot leg to the target.</p>
+        )}
         <p className="text-amber-200">{hazardous || !route.slope_compliant ? 'Exceeds the selected regional slope envelope.' : 'Meets the selected regional slope envelope.'} Local obstacles, radiation and suit consumables remain unassessed.</p>
-        <p className="text-neutral-400">Calculation snapshot: {crew.profile.pace_m_s} m/s + {crew.profile.mobility_allowance_pct}% suit/equipment time allowance. {crew.note}</p>
+        <p className="text-neutral-400">User-assumed walking pace and suit/equipment time allowance. No oxygen, metabolic, radiation or suit certification model.</p>
       </section> : null}
 
       <section className="mt-3 rounded-lg border border-cyan-400/25 bg-cyan-400/[0.05] px-3 pb-2.5 pt-2">
@@ -215,7 +285,7 @@ export default function RoutePanel({ route }: { route: RouteData }) {
               onClick={() => setRoutePhase('simulating')}
               className="rounded-md border border-cyan-400/40 bg-cyan-400/15 px-2.5 py-1 text-[11px] font-medium text-cyan-200 transition hover:bg-cyan-400/25"
             >
-              ▶ Start crew mission · {assignment.vehicle === 'sev' ? 'crew approach' : 'rover deployment'}
+              ▶ Start crew mission · {assignment.vehicle === 'sev' ? 'SEV to destination' : 'SEV parks + rover deploy'}
             </button>
           )}
         </div>
@@ -253,9 +323,14 @@ export default function RoutePanel({ route }: { route: RouteData }) {
       {crash ? (
         <div className="mt-2 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-[11px] leading-relaxed text-red-200">
           <span className="font-semibold uppercase tracking-wider text-red-300">
-            Scout lost · {crash.type === 'jet' ? 'training jet' : crash.type === 'fall' ? 'fall' : 'rollover'}
+            Scout lost · {crash.type === 'jet' ? 'training jet' : crash.type === 'fall' ? 'cliff fall' : 'rollover'}
           </span>
           <span className="ml-2">{crash.detail}</span>
+          {crash.type === 'fall' ? (
+            <p className="mt-1 text-red-300/80">
+              The rover topples only at a genuine cliff/landform — a bare over-limit grade does not stop it — and only because the unsafe route was chosen over the planner's safe traverse.
+            </p>
+          ) : null}
           {route.hazardous && crash.type !== 'jet' ? (
             <p className="mt-1 text-red-300/80">
               The planner's safe route avoids this danger zone.
@@ -301,6 +376,29 @@ export default function RoutePanel({ route }: { route: RouteData }) {
           </p>
         )}
       </section>
+
+      <details className="mt-3 rounded border border-white/10 bg-white/[0.02] p-3 text-xs">
+        <summary className="cursor-pointer font-semibold text-neutral-200">Mission parameters</summary>
+        <div className="mt-2 space-y-2">
+          {paramError && <p role="alert" className="text-red-300">{paramError}</p>}
+          <label className="block">Science objective
+            <textarea aria-label="Science objective" maxLength={200} value={crewProfile.objective} onChange={event => updateCrew('objective', event.target.value)} className="mt-1 w-full rounded bg-neutral-800 p-2" />
+          </label>
+          <label className="flex items-center justify-between gap-2">Maximum regional slope (°)
+            <input aria-label="Crew slope limit" type="number" min={1} max={45} value={slopeLimit} onChange={event => { const value = Number(event.target.value); if (value >= 1 && value <= 45) setSlopeLimit(value) }} className="w-16 rounded bg-neutral-800 p-1" />
+          </label>
+          <fieldset className="space-y-1 rounded border border-white/15 p-2">
+            <legend className="px-1 font-medium">Automatic task vehicle</legend>
+            {TASK_FLAGS.map(([key, label]) => <label key={key} className="flex gap-2"><input type="checkbox" checked={crewProfile[key]} onChange={event => updateCrew(key, event.target.checked)} />{label}</label>)}
+            <p className="text-neutral-400">Any checked condition assigns the rover. Otherwise destination safety decides: a crew-safe traverse uses the SEV; a hazardous one parks the SEV and auto-deploys the rover.</p>
+          </fieldset>
+          {ASSUMPTION_FIELDS.map(field => <label key={field.key} className="flex items-center justify-between gap-2">{field.label}
+            <input aria-label={field.label} type="number" min={field.min} max={field.max} step={field.step} value={crewProfile[field.key]} onChange={event => { const value = Number(event.target.value); if (Number.isFinite(value) && value >= field.min && value <= field.max) updateCrew(field.key, value) }} className="w-16 rounded bg-neutral-800 p-1" />
+          </label>)}
+          <button disabled={!route || working || phase === 'simulating' || !crewProfile.objective.trim()} onClick={() => void recalculate()} className="rounded border border-cyan-300/30 px-3 py-2 disabled:opacity-40">{working ? 'Recalculating…' : 'Recalculate route'}</button>
+          <p className="text-neutral-400">Changes apply to the next calculation. Defaults are illustrative scenario inputs, not NASA suit limits.</p>
+        </div>
+      </details>
 
       <div className="mt-2 space-y-1 text-[10px] leading-relaxed text-neutral-500">
         <p>MOLA-derived slope hazards only. Geysers, loose soil and small obstacles cannot be inferred from this DEM. CO₂ jet training is hypothetical and separate from this route assessment.</p>

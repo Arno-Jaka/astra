@@ -1,6 +1,6 @@
 import { Cartesian3, HeadingPitchRoll, Matrix4, Model, ModelAnimationLoop, Transforms, type Viewer } from 'cesium'
 import { MARS } from './trek'
-import { JUMP_DURATION, jumpHeight, MARS_GAIT_RATE } from './crewMission'
+import { CREW_FORWARD_HEADING_OFFSET, HOP_SPEED_FACTOR, JUMP_DURATION, jumpHeight, MARS_GAIT_RATE } from './crewMission'
 import { sampleRoute, totalDistanceKm, type RouteSample, type TraversableRoute } from './routePath'
 
 export const CREW_ASSETS = [
@@ -9,11 +9,48 @@ export const CREW_ASSETS = [
   { name: 'Fernando', url: new URL('../3D _assets/Astronaut_FernandoTheFlamingo.gltf', import.meta.url).href },
 ]
 type Pose = 'Idle' | 'Walk' | 'Jump' | 'Jump_Idle' | 'Jump_Land'
-type Member = { model: Model; clip: Pose | null; clock: number }
+type Member = {
+  model: Model
+  clip: Pose | null
+  clock: number
+  /** Per-astronaut gait, fixed (deterministic) so the crew is never in lockstep. */
+  paceFactor: number
+  side: number // lateral formation offset (m); uneven on purpose
+  exitSide: number // clearance from the parked carrier at disembark (m)
+  exitAlong: number // fore/aft offset at disembark (m)
+  exitDelay: number // staggered disembark (s)
+  hop: number // -1 grounded, else seconds since takeoff
+  hopCooldown: number // seconds until the next scheduled hop
+  hopPeriod: number // seconds between scheduled hops
+  progress: number // metres walked from the staging point
+  exited: boolean
+}
 
-/** All three actors share mission timing, but have staggered exits and gait phases.
- * World-space jump height is ballistic; authored jump root translation is locked
- * so the exported Earth-style trajectory cannot add a second vertical impulse. */
+/** Three distinct gaits: different stride speeds, uneven spacing, staggered
+ * exits and staggered hop schedules so they never move in unison. The crew
+ * steps out of the carrier's flank (`exitSide`, all on one side, clear of the
+ * ~2 m SEV half-width) and merges to its formation offset (`side`) over the
+ * first metres of the walk. */
+const CREW_GAIT = [
+  { paceFactor: 1.06, side: -1.1, exitSide: 5.2, exitAlong: -1.0, exitDelay: 0.3, hopCooldown: 1.2, hopPeriod: 6.5 },
+  { paceFactor: 0.93, side: 0.9, exitSide: 5.6, exitAlong: -0.2, exitDelay: 1.4, hopCooldown: 3.6, hopPeriod: 5.0 },
+  { paceFactor: 1.0, side: 0.1, exitSide: 5.3, exitAlong: 0.7, exitDelay: 2.5, hopCooldown: 2.3, hopPeriod: 7.5 },
+]
+/** Distance (m) over which the crew merges from its beside-the-carrier exit
+ * clearance to its walking formation offset. Keeps them clear of the parked
+ * vehicle without spreading the group out. */
+const EXIT_MERGE_M = 18
+/** Bounded trailing gap (m): the group stays together without equal spacing. */
+const MAX_TRAIL_M = 3.2
+/** How long the landing pose holds before the walk resumes (s). */
+const LANDING_HOLD_S = 0.4
+/** Authored Jump_Land clip length (s) played across the landing hold. */
+const LANDING_CLIP_S = 0.3666667
+
+/** All three actors share the mission goal but have independent gait, spacing,
+ * hop timing and exit timing. World-space jump height is ballistic under Mars
+ * gravity; the authored jump root translation is locked so the exported
+ * Earth-style trajectory cannot add a second vertical impulse. */
 export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute, stagingT: number,
   groundAt: (sample: RouteSample) => number, cancelled: () => boolean) {
   const members: Member[] = []
@@ -28,15 +65,15 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
       const model = await Model.fromGltfAsync({ url: asset.url, scale: 0.65, show: false })
       if (cancelled()) { model.destroy(); destroy(); return null }
       viewer.scene.primitives.add(model)
-      members.push({ model, clip: null, clock: 0 })
+      members.push({ model, clip: null, clock: 0, ...CREW_GAIT[members.length], hop: -1, progress: 0, exited: false })
     }
   } catch (error) { destroy(); throw error }
   let elapsed = 0
   let stopped = false
-  let approach = 0
-  let hop = -1
+  let leadProgress = 0
   let mode: 'exit' | 'hold' | 'walk' | 'complete' = 'exit'
   const total = totalDistanceKm(route)
+  const spanM = Math.max(1e-6, (1 - stagingT) * total * 1000)
   const stage = sampleRoute(route, stagingT)
   const pose = (member: Member, clip: Pose, dt: number, rate = 1) => {
     if (!member.model.ready) return
@@ -56,52 +93,86 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
     const lon = sample.lon + (Math.sin(sample.bearing) * along + Math.cos(sample.bearing) * side) / (59238 * Math.max(0.1, Math.cos(sample.lat * Math.PI / 180)))
     const lat = sample.lat + (Math.cos(sample.bearing) * along - Math.sin(sample.bearing) * side) / 59238
     const ground = groundAt({ ...sample, lon, lat })
-    // These rigs face their glTF +Z axis, which Cesium maps onto the local -Y
-    // axis of the model frame. `bearing + PI` is the heading that points that
-    // forward axis along the route bearing (verified against Cesium at several
-    // bearings: with `bearing - PI/2` the crew walked 90° to the right).
+    // These rigs face their glTF +Z axis, which Cesium's axis correction maps
+    // onto the model frame's +X axis (east at heading 0). The compass bearing
+    // b points along the route, and local +X points at azimuth 90° + heading,
+    // so CREW_FORWARD_HEADING_OFFSET aims the body's forward axis along the
+    // direction of travel (verified against joint world positions).
     member.model.modelMatrix = Transforms.headingPitchRollToFixedFrame(
-      Cartesian3.fromDegrees(lon, lat, ground + 0.04 + height, MARS), new HeadingPitchRoll(sample.bearing + Math.PI, 0, 0), MARS)
+      Cartesian3.fromDegrees(lon, lat, ground + 0.04 + height, MARS), new HeadingPitchRoll(sample.bearing + CREW_FORWARD_HEADING_OFFSET, 0, 0), MARS)
   }
   return {
     members,
     destroy,
     get mode() { return mode },
-    get fraction() { return stagingT + approach / (total * 1000) },
-    stop() { stopped = true; hop = -1 },
+    get fraction() { return stagingT + leadProgress / (total * 1000) },
+    stop() { stopped = true; for (const member of members) member.hop = -1 },
     walk() { mode = 'walk' },
-    jump() { if ((mode === 'walk' || mode === 'hold' || mode === 'complete') && hop < 0) hop = 0 },
+    jump() {
+      if (mode !== 'walk' && mode !== 'hold' && mode !== 'complete') return
+      for (const member of members) if (member.hop < 0) { member.hop = 0; member.hopCooldown = member.hopPeriod }
+    },
     update(dt: number, pace: number) {
       if (disposed || members.some(m => !m.model.ready)) return
       if (!stopped) elapsed += dt
-      if (hop >= 0) { hop += dt; if (hop >= JUMP_DURATION + 0.5) hop = -1 }
-      if (!stopped && mode === 'walk' && hop < 0) {
-        approach = Math.min((1 - stagingT) * total * 1000, approach + dt * pace)
-        if (approach >= (1 - stagingT) * total * 1000) mode = 'complete'
+      if (!stopped && mode === 'walk') {
+        for (const member of members) {
+          const airborne = member.hop >= 0 && member.hop < JUMP_DURATION
+          const speed = pace * member.paceFactor * (airborne ? HOP_SPEED_FACTOR : 1)
+          member.progress = Math.min(spanM, member.progress + dt * speed)
+        }
+        // Pull stragglers up to the bounded trailing gap; the fastest leads.
+        const lead = Math.max(...members.map(member => member.progress))
+        for (const member of members) member.progress = Math.max(member.progress, lead - MAX_TRAIL_M)
+        leadProgress = Math.max(...members.map(member => member.progress))
+        if (leadProgress >= spanM - 1e-6) mode = 'complete'
       }
-      members.forEach((member, index) => {
-        const exitTime = elapsed - index * 1.2
-        member.model.show = exitTime >= 0
+      // Independent, staggered hop schedule (a deliberate jump() overrides it).
+      for (const member of members) {
+        if (member.hop >= 0) {
+          member.hop += dt
+          if (member.hop >= JUMP_DURATION + LANDING_HOLD_S) member.hop = -1
+        } else if (mode === 'walk' && !stopped) {
+          member.hopCooldown -= dt
+          if (member.hopCooldown <= 0) { member.hop = 0; member.hopCooldown = member.hopPeriod }
+        }
+      }
+      const base = sampleRoute(route, Math.min(1, stagingT + (mode === 'exit' || mode === 'hold' ? 0 : leadProgress) / (total * 1000)))
+      members.forEach((member) => {
+        member.model.show = elapsed >= member.exitDelay
         // Hide the unrelated weapon accessory supplied with these character rigs.
         const pistol = member.model.getNode('Pistol')
         if (pistol) pistol.show = false
         if (mode === 'exit') {
-          const t = Math.max(0, Math.min(1, exitTime / 3))
-          pose(member, t < 1 && !stopped ? 'Walk' : 'Idle', dt, t < 1 ? MARS_GAIT_RATE : 1)
-          place(member, stage, -1 + index * 1.5, 2.4 + t * (2.5 + index), 0)
-        } else {
-          const airborne = hop >= 0 && hop < JUMP_DURATION
-          const landing = hop >= JUMP_DURATION
-          const clip: Pose = airborne ? (hop < 0.22 ? 'Jump' : 'Jump_Idle') : landing ? 'Jump_Land' : mode === 'walk' && !stopped ? 'Walk' : 'Idle'
-          pose(member, clip, dt, clip === 'Walk' ? Math.min(1.2, pace / 0.5) * MARS_GAIT_RATE : clip === 'Jump_Land' ? 0.3666667 / 0.5 : 1)
-          const sample = mode === 'hold' ? stage : sampleRoute(route, stagingT + approach / (total * 1000))
-          // Blend the exit formation into the approach without teleportation.
-          const blend = Math.min(1, approach / 8)
-          place(member, sample, (-1 + index * 1.5) * (1 - blend) - index * 1.5 * blend,
-            (4.9 + index) * (1 - blend) + (index - 1) * 1.5 * blend, airborne ? jumpHeight(hop) : 0)
+          const t = elapsed - member.exitDelay
+          if (t < 0) return
+          // Hop out of the carrier's flank: takeoff, float, then land beside it.
+          const airborne = t < JUMP_DURATION
+          const clip: Pose = airborne ? (t < JUMP_DURATION * 0.55 ? 'Jump' : 'Jump_Idle')
+            : t < JUMP_DURATION + LANDING_HOLD_S ? 'Jump_Land' : 'Idle'
+          pose(member, clip, dt, clip === 'Jump_Land' ? LANDING_CLIP_S / LANDING_HOLD_S : MARS_GAIT_RATE)
+          // The lateral offset grows through the hop so the crew visibly steps
+          // out to the side of the parked vehicle instead of through its body.
+          const out = 0.86 + 0.14 * Math.min(1, t / JUMP_DURATION)
+          place(member, stage, member.exitAlong, member.side + member.exitSide * out,
+            airborne ? jumpHeight(t) : 0)
+          if (t >= JUMP_DURATION + LANDING_HOLD_S) member.exited = true
+          return
         }
+        const airborne = member.hop >= 0 && member.hop < JUMP_DURATION
+        const landing = member.hop >= JUMP_DURATION
+        const clip: Pose = airborne ? (member.hop < JUMP_DURATION * 0.55 ? 'Jump' : 'Jump_Idle')
+          : landing ? 'Jump_Land' : mode === 'walk' && !stopped ? 'Walk' : 'Idle'
+        const rate = clip === 'Walk' ? Math.min(1.3, (pace * member.paceFactor) / 0.5) * MARS_GAIT_RATE
+          : clip === 'Jump_Land' ? LANDING_CLIP_S / LANDING_HOLD_S : MARS_GAIT_RATE
+        pose(member, clip, dt, rate)
+        // Merge from the exit clearance to the formation offset as they walk,
+        // so they clear the parked carrier before tightening up.
+        const merge = Math.max(0, 1 - member.progress / EXIT_MERGE_M)
+        place(member, base, member.progress - leadProgress + member.exitAlong * merge,
+          member.side + member.exitSide * merge, airborne ? jumpHeight(member.hop) : 0)
       })
-      if (mode === 'exit' && elapsed >= 5.4) mode = 'hold'
+      if (mode === 'exit' && members.every(member => member.exited)) mode = 'hold'
     },
   }
 }
