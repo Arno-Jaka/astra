@@ -35,7 +35,9 @@ Updated 12 November 2026.
 - Three-astronaut SEV crew (Finn, Rae, Fernando) that drives to the target (or the
   last safe point), hops out, then bounds the final approach or holds while the
   rover is deployed. Idle/walk/jump/jump-land clips use Mars gravity (3.71 m/s²):
-  a ballistic hop with the exported Earth-style jump root motion locked out. The
+  a ballistic hop with the exported Earth-style jump root motion locked out. Every
+  bound plays its `Jump` → `Jump_Idle` → `Jump_Land` sequence, each clip running
+  once across its phase so the takeoff and landing read clearly. The
   on-screen approach is time-compressed to ~10–15 s of fast, floaty low-gravity
   bounding (the panel's EVA estimate still uses the real assumed walking pace).
   Each astronaut faces the direction of travel with an independent stride, hop

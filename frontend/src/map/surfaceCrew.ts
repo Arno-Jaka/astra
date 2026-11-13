@@ -33,9 +33,9 @@ type Member = {
  * metres of the walk. Hops are frequent and short-cycled so the crew bounds
  * continuously in the low gravity rather than plodding. */
 const CREW_GAIT = [
-  { paceFactor: 1.04, side: -1.1, exitSide: 5.2, exitAlong: -1.0, exitDelay: 0.2, hopCooldown: 0.15, hopPeriod: 0.35 },
-  { paceFactor: 0.97, side: 0.9, exitSide: 5.6, exitAlong: -0.2, exitDelay: 0.9, hopCooldown: 0.55, hopPeriod: 0.50 },
-  { paceFactor: 1.0, side: 0.1, exitSide: 5.3, exitAlong: 0.7, exitDelay: 1.6, hopCooldown: 0.95, hopPeriod: 0.65 },
+  { paceFactor: 1.04, side: -1.1, exitSide: 5.2, exitAlong: -1.0, exitDelay: 0.15, hopCooldown: 0.15, hopPeriod: 0.35 },
+  { paceFactor: 0.97, side: 0.9, exitSide: 5.6, exitAlong: -0.2, exitDelay: 0.55, hopCooldown: 0.55, hopPeriod: 0.50 },
+  { paceFactor: 1.0, side: 0.1, exitSide: 5.3, exitAlong: 0.7, exitDelay: 0.95, hopCooldown: 0.95, hopPeriod: 0.65 },
 ]
 /** Distance (m) over which the crew merges from its beside-the-carrier exit
  * clearance to its walking formation offset. Keeps them clear of the parked
@@ -46,9 +46,14 @@ const EXIT_MERGE_M = 18
  *  trailing astronaut forward. */
 const MAX_TRAIL_M = 6.0
 /** How long the landing pose holds before the walk resumes (s). */
-const LANDING_HOLD_S = 0.4
-/** Authored Jump_Land clip length (s) played across the landing hold. */
+const LANDING_HOLD_S = 0.5
+/** Authored clip lengths (s); each is played once, in step with its phase. */
+const JUMP_CLIP_S = 0.3666667
+const JUMP_IDLE_CLIP_S = 0.5
 const LANDING_CLIP_S = 0.3666667
+/** Fraction of the air time spent in the takeoff/`Jump` clip; the rest floats
+ * in `Jump_Idle`. Biased to `Jump` so the leap reads as a jump, not a glide. */
+const JUMP_TAKEOFF_FRACTION = 0.6
 
 /** All three actors share the mission goal but have independent gait, spacing,
  * hop timing and exit timing. World-space jump height is ballistic under Mars
@@ -81,6 +86,15 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
   // CREW_APPROACH_SECONDS so the crew bounds to the target promptly. The panel's
   // EVA estimate still uses the real suited pace.
   const approachSpeed = approachSpeedMps(spanM)
+  // Play each authored clip once across its phase, so the takeoff, float and
+  // landing all read clearly instead of being cut short or frozen mid-pose.
+  const clipRate = (clip: Pose) => {
+    if (clip === 'Jump') return JUMP_CLIP_S / (JUMP_DURATION * JUMP_TAKEOFF_FRACTION)
+    if (clip === 'Jump_Idle') return JUMP_IDLE_CLIP_S / (JUMP_DURATION * (1 - JUMP_TAKEOFF_FRACTION))
+    if (clip === 'Jump_Land') return LANDING_CLIP_S / LANDING_HOLD_S
+    if (clip === 'Walk') return Math.min(2.2, approachSpeed / 3) * MARS_GAIT_RATE
+    return MARS_GAIT_RATE
+  }
   const stage = sampleRoute(route, stagingT)
   const pose = (member: Member, clip: Pose, dt: number, rate = 1) => {
     if (!member.model.ready) return
@@ -158,9 +172,9 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
           if (t < 0) return
           // Hop out of the carrier's flank: takeoff, float, then land beside it.
           const airborne = t < JUMP_DURATION
-          const clip: Pose = airborne ? (t < JUMP_DURATION * 0.55 ? 'Jump' : 'Jump_Idle')
+          const clip: Pose = airborne ? (t < JUMP_DURATION * JUMP_TAKEOFF_FRACTION ? 'Jump' : 'Jump_Idle')
             : t < JUMP_DURATION + LANDING_HOLD_S ? 'Jump_Land' : 'Idle'
-          pose(member, clip, dt, clip === 'Jump_Land' ? LANDING_CLIP_S / LANDING_HOLD_S : MARS_GAIT_RATE)
+          pose(member, clip, dt, clipRate(clip))
           // The lateral offset grows through the hop so the crew visibly steps
           // out to the side of the parked vehicle instead of through its body.
           const out = 0.86 + 0.14 * Math.min(1, t / JUMP_DURATION)
@@ -171,11 +185,9 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
         }
         const airborne = member.hop >= 0 && member.hop < JUMP_DURATION
         const landing = member.hop >= JUMP_DURATION
-        const clip: Pose = airborne ? (member.hop < JUMP_DURATION * 0.55 ? 'Jump' : 'Jump_Idle')
+        const clip: Pose = airborne ? (member.hop < JUMP_DURATION * JUMP_TAKEOFF_FRACTION ? 'Jump' : 'Jump_Idle')
           : landing ? 'Jump_Land' : mode === 'walk' && !stopped ? 'Walk' : 'Idle'
-        const rate = clip === 'Walk' ? Math.min(2.2, approachSpeed / 3) * MARS_GAIT_RATE
-          : clip === 'Jump_Land' ? LANDING_CLIP_S / LANDING_HOLD_S : MARS_GAIT_RATE
-        pose(member, clip, dt, rate)
+        pose(member, clip, dt, clipRate(clip))
         // Merge from the exit clearance to the formation offset as they walk,
         // so they clear the parked carrier before tightening up.
         const merge = Math.max(0, 1 - member.progress / EXIT_MERGE_M)

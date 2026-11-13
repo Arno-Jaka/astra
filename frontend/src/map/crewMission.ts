@@ -12,7 +12,7 @@ export const JUMP_DURATION = hopDuration(MARS_CREW_GRAVITY)
  * estimate in the panel still uses the real suited pace; this only controls how
  * fast the illustrative low-gravity bound plays out, so the crew bounds to the
  * target promptly instead of plodding at the walking pace. */
-export const CREW_APPROACH_SECONDS = 11
+export const CREW_APPROACH_SECONDS = 10
 /** Visual speed of the on-screen final approach (m/s): covers `spanM` in
  * CREW_APPROACH_SECONDS. Presentation only — not a suited walking speed. */
 export const approachSpeedMps = (spanM: number) => Math.max(0.1, spanM / CREW_APPROACH_SECONDS)
