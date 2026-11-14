@@ -40,6 +40,7 @@ import type {
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import DriveHud from '../components/DriveHud'
 import MapExplorer from '../components/MapExplorer'
+import TerrainSimulationView from '../components/TerrainSimulationView'
 
 import LayerPanel from '../components/LayerPanel'
 import SciencePanel from '../components/SciencePanel'
@@ -80,7 +81,6 @@ import { advanceCrash, bodySupport, terrainSupport, topplesAtCliff, type CrashBo
 import { createDriveSurface } from './driveSurface'
 import { declutterLabels } from './labelLayout'
 import { createWheelDust } from './wheelDust'
-import { createSandstormFx, type SandstormFx } from './sandstormFx'
 import { createMolaTerrainProvider } from './terrain'
 import { MARS, MOLA_SHADE, VIKING, createTrekProvider } from './trek'
 
@@ -363,6 +363,8 @@ async function presampleCorridor(
 export default function CesiumMap() {
   const containerRef = useRef<HTMLDivElement>(null)
   const [mapViewer, setMapViewer] = useState<Viewer | null>(null)
+  const routePhase = useAppStore((s) => s.routePhase)
+  const showTerrainSim = routePhase === 'preview' || routePhase === 'simulating'
   const [terrainStatus, setTerrainStatus] = useState<'loading' | 'ready' | 'fallback'>('loading')
   const retryTerrainRef = useRef<() => void>(() => {})
 
@@ -427,8 +429,6 @@ export default function CesiumMap() {
     }
     viewer.scene.backgroundColor = Color.fromCssColorString('#120b08')
 
-    // Sandstorm particle effect (visual only).
-    const sandstormFx: SandstormFx = createSandstormFx(viewer)
 
     viewer.camera.setView({
       destination: Cartesian3.fromDegrees(77.7, 18.4, 10_000_000, MARS),
@@ -2701,7 +2701,6 @@ export default function CesiumMap() {
       for (const entity of siteEntities) {
         viewer.entities.remove(entity)
       }
-      sandstormFx.destroy()
       if (import.meta.env.DEV) {
         delete (globalThis as unknown as Record<string, unknown>).__astraViewer
         delete (globalThis as unknown as Record<string, unknown>).__astraProbe
@@ -2725,12 +2724,15 @@ export default function CesiumMap() {
 
   return (
     <>
-      <div ref={containerRef} className="h-full w-full" />
+      <div className="relative h-full w-full">
+        <div ref={containerRef} className={`h-full w-full ${showTerrainSim ? 'invisible' : ''}`} />
+        {showTerrainSim ? <TerrainSimulationView /> : null}
+      </div>
       <LayerPanel terrainStatus={terrainStatus} onRetryTerrain={() => retryTerrainRef.current()} />
       <DriveHud />
       <SciencePanel />
       <ScienceToast />
-      {mapViewer && !mapViewer.isDestroyed() && <MapExplorer viewer={mapViewer} />}
+      {mapViewer && !mapViewer.isDestroyed() && !showTerrainSim && <MapExplorer viewer={mapViewer} />}
       <div className="pointer-events-none fixed bottom-[92px] left-1/2 z-20 flex -translate-x-1/2">
         <button type="button" onClick={toGlobeView} className="pointer-events-auto rounded-full border border-white/20 bg-neutral-950/80 px-3 py-1.5 text-[11px] font-medium text-neutral-100 shadow-lg backdrop-blur hover:bg-white/10">
           Globe view

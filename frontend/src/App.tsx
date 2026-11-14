@@ -6,6 +6,7 @@ import SurvivalBriefingPanel from './components/SurvivalBriefingPanel'
 import CesiumMap from './map/CesiumMap'
 import FloatingPanel from './components/FloatingPanel'
 import { useAppStore } from './store/appStore'
+import { useDriveStore } from './store/driveStore'
 import { speak, stopSpeaking } from './tts'
 import { connectCommands } from './ws/commandChannel'
 
@@ -29,6 +30,8 @@ export default function App() {
   const briefing = useAppStore((state) => state.briefing)
   const conditions = useAppStore((state) => state.conditions)
   const route = useAppStore((state) => state.route)
+  const missionActive = useDriveStore((state) => state.active)
+  void missionActive
 
   useEffect(() => connectCommands(), [])
 

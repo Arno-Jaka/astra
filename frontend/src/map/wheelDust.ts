@@ -13,12 +13,12 @@ export function createWheelDust(viewer: Viewer) {
   context.fillStyle = gradient; context.fillRect(0, 0, 32, 32)
   const systems = [-1.18, 1.18].map(side => {
     const system = new ParticleSystem({
-      image: canvas, imageSize: new Cartesian2(0.3, 0.3), sizeInMeters: true,
-      emitter: new ConeEmitter(0.9), emissionRate: 0,
-      minimumSpeed: 0.3, maximumSpeed: 1.1,
-      minimumParticleLife: 0.4, maximumParticleLife: 1.2,
-      startScale: 0.4, endScale: 3.5,
-      startColor: new Color(0.67, 0.44, 0.26, 0.4), endColor: new Color(0.5, 0.32, 0.2, 0),
+      image: canvas, imageSize: new Cartesian2(0.18, 0.18), sizeInMeters: true,
+      emitter: new ConeEmitter(0.75), emissionRate: 0,
+      minimumSpeed: 0.2, maximumSpeed: 0.7,
+      minimumParticleLife: 0.25, maximumParticleLife: 0.7,
+      startScale: 0.3, endScale: 1.6,
+      startColor: new Color(0.7, 0.5, 0.32, 0.22), endColor: new Color(0.55, 0.38, 0.24, 0),
       updateCallback: (particle, dt) => {
         const up = MARS.geodeticSurfaceNormal(particle.position, new Cartesian3())
         Cartesian3.add(particle.velocity, Cartesian3.multiplyByScalar(up, -3.71 * dt, up), particle.velocity)
@@ -46,7 +46,7 @@ export function createWheelDust(viewer: Viewer) {
     update(matrix: Matrix4, speed: number) {
       for (const { side, system } of systems) {
         system.modelMatrix = Matrix4.multiplyByTranslation(matrix, new Cartesian3(-1.3, side, 0.35), new Matrix4())
-        system.emissionRate = Math.min(70, Math.max(0, speed) * 90)
+        system.emissionRate = Math.min(24, Math.max(0, speed) * 28)
       }
     },
     stop() { for (const { system } of systems) system.emissionRate = 0 },
