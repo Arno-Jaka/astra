@@ -357,14 +357,23 @@ export default function TerrainSimulationView() {
     const colors = new Float32Array(posAttr.count * 3)
 
     let baseElev = 0
-    let elevScale = 0.015
+    let elevScale = 0.02
     if (dem) {
       let minE = Infinity, maxE = -Infinity
       for (let i = 0; i < dem.data.length; i++) { const v = dem.data[i]; if (v < minE) minE = v; if (v > maxE) maxE = v }
-      if (isFinite(minE) && isFinite(maxE)) { baseElev = (minE + maxE) / 2; elevScale = 0.02 }
+      if (isFinite(minE) && isFinite(maxE)) {
+        baseElev = (minE + maxE) / 2
+        const relief = Math.max(1, maxE - minE)
+        // scale NASA MOLA relief to visible but contour-faithful local terrain
+        elevScale = clamp(18 / relief, 0.008, 0.04)
+      }
     } else if (traverse?.profile?.length) {
       const es = traverse.profile.map((p: any) => p.elevation_m).filter((v: any): v is number => typeof v === 'number')
-      if (es.length) { baseElev = (Math.min(...es) + Math.max(...es)) / 2; elevScale = 0.02 }
+      if (es.length) {
+        baseElev = (Math.min(...es) + Math.max(...es)) / 2
+        const relief = Math.max(1, Math.max(...es) - Math.min(...es))
+        elevScale = clamp(18 / relief, 0.008, 0.04)
+      }
     }
 
     const getBaseHeight = (x: number, z: number) => {
