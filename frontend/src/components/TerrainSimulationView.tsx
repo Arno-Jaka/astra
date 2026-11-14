@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { useAppStore } from '../store/appStore'
 import { useDriveStore } from '../store/driveStore'
 import { sampleRoute } from '../map/routePath'
@@ -121,25 +122,25 @@ async function fetchDemTile(b: Bounds, width = 128, height = 128): Promise<Float
   }
 }
 
+function getVehicleUrl(vehicle: string | undefined) {
+  if (vehicle === 'sev') return new URL('../3D _assets/Space Exploration Vehicle.glb', import.meta.url).href
+  return '/models/perseverance.glb'
+}
+
 export default function TerrainSimulationView() {
   const containerRef = useRef<HTMLDivElement>(null)
   const route = useAppStore((s) => s.route)
   const routeChoice = useAppStore((s) => s.routeChoice)
   const previewT = useAppStore((s) => s.previewT)
-  const routePhase = useAppStore((s) => s.routePhase)
   const driveDistanceKm = useDriveStore((s) => s.distanceKm)
   const driveTotalKm = useDriveStore((s) => s.totalKm)
   const active = useDriveStore((s) => s.active)
+  const vehicle = useDriveStore((s) => s.vehicle)
 
   const traverse = useMemo(() => {
     if (!route) return null
     return routeChoice === 'hazardous' && route.hazardous ? route.hazardous : route
   }, [route, routeChoice])
-
-  const progressT = useMemo(() => {
-    if (active && driveTotalKm > 0) return Math.min(1, Math.max(0, driveDistanceKm / driveTotalKm))
-    return previewT
-  }, [active, driveDistanceKm, driveTotalKm, previewT])
 
   const bounds = useMemo(() => routeBounds(traverse), [traverse])
   const siteKey = (route?.end || route?.start || 'mars').toLowerCase()
@@ -158,16 +159,19 @@ export default function TerrainSimulationView() {
     return () => { cancelled = true }
   }, [bounds?.west, bounds?.south, bounds?.east, bounds?.north])
 
-  const routeLocalPoints = useMemo(() => {
-    if (!traverse || !bounds) return null
-    const b = bounds
-    return traverse.coordinates.map(([lon, lat], i) => {
-      const p = lonLatToLocal(lon, lat, b)
-      const prof = traverse.profile[i]
-      const elev = (typeof prof?.elevation_m === 'number' ? prof.elevation_m : null)
-      return { ...p, lon, lat, elev }
-    })
-  }, [traverse, bounds])
+  const stateRef = useRef({ traverse: null as any, bounds: null as Bounds | null, previewT: 0, active: false, driveDistanceKm: 0, driveTotalKm: 0, vehicle: 'rover' as string })
+  stateRef.current = { traverse, bounds, previewT, active, driveDistanceKm, driveTotalKm, vehicle }
+
+  const worldRef = useRef<{
+    scene: THREE.Scene
+    camera: THREE.PerspectiveCamera
+    renderer: THREE.WebGLRenderer
+    sampleTerrainY: (x: number, z: number) => number
+    marker: THREE.Mesh
+    vehicleObj: THREE.Object3D
+    target: THREE.Vector3
+    spherical: { radius: number; theta: number; phi: number }
+  } | null>(null)
 
   useEffect(() => {
     const container = containerRef.current
@@ -238,7 +242,6 @@ export default function TerrainSimulationView() {
     const posAttr = geo.attributes.position
     const colors = new Float32Array(posAttr.count * 3)
 
-    // Determine elevation base/range from DEM (real MOLA data) or route profile fallback
     let baseElev = 0
     let elevScale = 0.015
     if (dem) {
@@ -246,12 +249,12 @@ export default function TerrainSimulationView() {
       for (let i = 0; i < dem.data.length; i++) { const v = dem.data[i]; if (v < minE) minE = v; if (v > maxE) maxE = v }
       if (isFinite(minE) && isFinite(maxE)) { baseElev = (minE + maxE) / 2; elevScale = 0.02 }
     } else if (traverse?.profile?.length) {
-      const es = traverse.profile.map((p) => p.elevation_m).filter((v): v is number => typeof v === 'number')
+      const es = traverse.profile.map((p: any) => p.elevation_m).filter((v: any): v is number => typeof v === 'number')
       if (es.length) { baseElev = (Math.min(...es) + Math.max(...es)) / 2; elevScale = 0.02 }
     }
 
     const getBaseHeight = (x: number, z: number) => {
-      if (dem) {
+      if (dem && bounds) {
         const b = dem.b
         const midLat = ((b.north + b.south) / 2) * Math.PI / 180
         const mPerDegLat = (Math.PI / 180) * MARS_RADIUS_M
@@ -266,25 +269,13 @@ export default function TerrainSimulationView() {
         const elev = sampleHeightmap(dem.data, dem.w, dem.h, b, lon, lat)
         return (elev - baseElev) * elevScale
       }
-      // Fallback: shape from route elevation profile along corridor
-      if (routeLocalPoints && routeLocalPoints.length >= 2) {
-        let bestI = 0, bestD = Infinity
-        for (let i = 0; i < routeLocalPoints.length; i++) {
-          const p = routeLocalPoints[i]; const dx = x - p.x, dz = z - p.z; const d = dx * dx + dz * dz
-          if (d < bestD) { bestD = d; bestI = i }
-        }
-        const e = routeLocalPoints[bestI].elev
-        if (typeof e === 'number') return (e - baseElev) * elevScale
-      }
       return 0
     }
 
-    // Procedural detail layered on top of real DEM contours (inspired by generator)
     const detailHeight = (x: number, z: number, base: number) => {
       const hScale = detailScale
       const rockyGround = noise.ridged(x * 0.24, z * 0.24, 3) * 0.55 * hScale + noise.fbm(x * 0.65, z * 0.65, 2) * 0.22 * hScale
       const smallHills = noise.fbm(x * 0.075 + 4.2, z * 0.075 - 3.9, 4) * 1.4 * hScale
-      // attenuate added relief on very steep DEM slopes to preserve real contours
       const atten = 1 / (1 + Math.abs(base) * 0.12)
       return (rockyGround + smallHills * 0.5) * atten
     }
@@ -313,7 +304,6 @@ export default function TerrainSimulationView() {
 
     const sampleTerrainY = (x: number, z: number) => getBaseHeight(x, z) + detailHeight(x, z, getBaseHeight(x, z))
 
-    // Instanced rocks (procedural detail), biased a bit toward route corridor when available
     const createRockGeometry = (rockSeed: number) => {
       const rockGeo = new THREE.IcosahedronGeometry(1, 1)
       const rPos = rockGeo.attributes.position
@@ -331,7 +321,6 @@ export default function TerrainSimulationView() {
     const totalRocks = Math.floor(700 * rockDensity)
     const rocksPerVariant = Math.max(1, Math.floor(totalRocks / rockVariants.length))
     const dummy = new THREE.Object3D(), rockTint = new THREE.Color()
-    const rockMeshes: THREE.InstancedMesh[] = []
     rockVariants.forEach((variantGeo, vIdx) => {
       const instMesh = new THREE.InstancedMesh(variantGeo, rockMat, rocksPerVariant)
       instMesh.castShadow = true; instMesh.receiveShadow = true
@@ -351,12 +340,10 @@ export default function TerrainSimulationView() {
       }
       instMesh.instanceMatrix.needsUpdate = true
       if (instMesh.instanceColor) instMesh.instanceColor.needsUpdate = true
-      scene.add(instMesh); rockMeshes.push(instMesh)
+      scene.add(instMesh)
     })
 
-    // Route polyline & progress marker in local DEM-mapped space (mimics real traverse contour)
-    let marker: THREE.Mesh | null = null
-    if (traverse && dem && bounds) {
+    if (traverse && bounds) {
       const pts: THREE.Vector3[] = []
       for (const [lon, lat] of traverse.coordinates) {
         const p = lonLatToLocal(lon, lat, bounds)
@@ -365,23 +352,19 @@ export default function TerrainSimulationView() {
       }
       if (pts.length >= 2) {
         const lineGeo = new THREE.BufferGeometry().setFromPoints(pts)
-        const line = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.9 }))
-        scene.add(line)
+        scene.add(new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.9 })))
       }
-      const s = sampleRoute(traverse as any, progressT)
-      const p = lonLatToLocal(s.lon, s.lat, bounds)
-      const y = sampleTerrainY(p.x, p.z)
-      marker = new THREE.Mesh(new THREE.SphereGeometry(1.1, 20, 20), new THREE.MeshStandardMaterial({ color: 0x22d3ee, emissive: 0x0b4f5a, roughness: 0.4 }))
-      marker.position.set(p.x, y + 1.3, p.z)
-      marker.castShadow = true
-      scene.add(marker)
     }
 
-    // Camera controls
-    let isDragging = false, isPanning = false, prevX = 0, prevY = 0
+    const marker = new THREE.Mesh(new THREE.SphereGeometry(0.9, 18, 18), new THREE.MeshStandardMaterial({ color: 0x22d3ee, emissive: 0x0b4f5a, roughness: 0.4 }))
+    marker.castShadow = true
+    scene.add(marker)
+
+    const vehicleGroup = new THREE.Group()
+    scene.add(vehicleGroup)
+
     const spherical = { radius: 95, theta: 0.65, phi: 1.22 }
-    const target = marker ? marker.position.clone() : new THREE.Vector3(0, 4, 0)
-    if (marker) { target.y = Math.max(target.y - 1, 0); spherical.radius = 70 }
+    const target = new THREE.Vector3(0, 4, 0)
     const updateCameraPosition = () => {
       spherical.phi = Math.max(0.15, Math.min(Math.PI / 2 - 0.04, spherical.phi))
       spherical.radius = Math.max(12, Math.min(240, spherical.radius))
@@ -390,8 +373,10 @@ export default function TerrainSimulationView() {
       camera.position.z = target.z + spherical.radius * Math.sin(spherical.phi) * Math.cos(spherical.theta)
       camera.lookAt(target)
     }
-    updateCameraPosition()
 
+    worldRef.current = { scene, camera, renderer, sampleTerrainY, marker, vehicleObj: vehicleGroup, target, spherical }
+
+    let isDragging = false, isPanning = false, prevX = 0, prevY = 0
     const onPointerDown = (e: PointerEvent) => { isDragging = true; isPanning = e.button === 2 || e.shiftKey; prevX = e.clientX; prevY = e.clientY }
     const onPointerMove = (e: PointerEvent) => {
       if (!isDragging) return
@@ -424,10 +409,40 @@ export default function TerrainSimulationView() {
     window.addEventListener('resize', handleResize)
 
     let animId = 0
-    const animate = () => { animId = requestAnimationFrame(animate); renderer.render(scene, camera) }
+    let first = true
+    const animate = () => {
+      animId = requestAnimationFrame(animate)
+      const w = worldRef.current
+      if (w) {
+        const st = stateRef.current
+        const t = st.active && st.driveTotalKm > 0 ? Math.min(1, Math.max(0, st.driveDistanceKm / st.driveTotalKm)) : st.previewT
+        if (st.traverse && st.bounds) {
+          try {
+            const s = sampleRoute(st.traverse as any, t)
+            const p = lonLatToLocal(s.lon, s.lat, st.bounds)
+            const y = w.sampleTerrainY(p.x, p.z)
+            w.marker.position.set(p.x, y + 1.2, p.z)
+            w.marker.visible = true
+            w.vehicleObj.position.set(p.x, y + 0.4, p.z)
+            // bearing: 0=north, clockwise -> in our local coords (x=east, z=south) heading = bearing
+            w.vehicleObj.rotation.y = -s.bearing
+            w.vehicleObj.visible = true
+            if (first) { w.target.set(p.x, y + 1.5, p.z); first = false }
+          } catch {
+            w.marker.visible = false
+          }
+        } else {
+          w.marker.visible = false
+          w.vehicleObj.visible = false
+        }
+        updateCameraPosition()
+      }
+      renderer.render(scene, camera)
+    }
     animate()
 
     return () => {
+      worldRef.current = null
       window.removeEventListener('resize', handleResize)
       domElem.removeEventListener('pointerdown', onPointerDown)
       window.removeEventListener('pointermove', onPointerMove)
@@ -438,7 +453,46 @@ export default function TerrainSimulationView() {
       renderer.dispose()
       if (domElem && container.contains(domElem)) container.removeChild(domElem)
     }
-  }, [siteKey, traverse, bounds, dem, routeLocalPoints, progressT, routePhase])
+  }, [siteKey, traverse, bounds, dem])
+
+  // Load/swap vehicle model when vehicle type changes
+  useEffect(() => {
+    const w = worldRef.current
+    if (!w) return
+    const group = w.vehicleObj as THREE.Group
+    // clear previous
+    while (group.children.length) {
+      const c = group.children[0]
+      group.remove(c)
+    }
+    // placeholder until loaded
+    const placeholder = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.7, 2.2), new THREE.MeshStandardMaterial({ color: 0xd97706, roughness: 0.7, metalness: 0.2 }))
+    placeholder.position.y = 0.35
+    placeholder.castShadow = true
+    group.add(placeholder)
+
+    let cancelled = false
+    const loader = new GLTFLoader()
+    const url = getVehicleUrl(vehicle)
+    loader.load(url, (gltf) => {
+      if (cancelled || worldRef.current?.vehicleObj !== group) return
+      group.clear()
+      const model = gltf.scene
+      // Normalize scale roughly for scene (scene units are scaled meters from DEM); adjust per asset
+      const box = new THREE.Box3().setFromObject(model)
+      const size = new THREE.Vector3(); box.getSize(size)
+      const maxDim = Math.max(size.x, size.y, size.z) || 1
+      const targetSize = vehicle === 'sev' ? 4.5 : 3.0
+      const s = targetSize / maxDim
+      model.scale.setScalar(s)
+      // ground-align
+      box.setFromObject(model)
+      model.position.y -= box.min.y
+      model.traverse((obj) => { if ((obj as THREE.Mesh).isMesh) { obj.castShadow = true; obj.receiveShadow = true } })
+      group.add(model)
+    }, undefined, () => { /* keep placeholder on failure */ })
+    return () => { cancelled = true }
+  }, [vehicle, traverse, bounds, dem, siteKey])
 
   return (
     <div className="absolute inset-0 h-full w-full">
@@ -448,6 +502,9 @@ export default function TerrainSimulationView() {
           Loading NASA MOLA terrain contours…
         </div>
       )}
+      <div className="pointer-events-none absolute bottom-3 left-3 rounded bg-black/50 px-2 py-1 text-[10px] text-neutral-300 backdrop-blur">
+        3D mode (NASA MOLA contours + procedural detail) · drag orbit · shift-drag pan · scroll zoom
+      </div>
     </div>
   )
 }
