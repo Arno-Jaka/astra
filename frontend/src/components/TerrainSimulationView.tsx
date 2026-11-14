@@ -229,6 +229,7 @@ export default function TerrainSimulationView() {
     vehicleObj: THREE.Group
     crewGroup: THREE.Group
     crewMixers: THREE.AnimationMixer[]
+    crewActors: { mixer: THREE.AnimationMixer; actions: Record<string, THREE.AnimationAction>; current: string }[]
     scienceGroup: THREE.Group
     hazardGroup: THREE.Group
     target: THREE.Vector3
@@ -481,7 +482,7 @@ export default function TerrainSimulationView() {
       camera.lookAt(target)
     }
 
-    worldRef.current = { scene, camera, renderer, sampleTerrainY, terrainNormal, marker, vehicleObj: vehicleGroup, crewGroup, crewMixers: [], scienceGroup, hazardGroup, target, spherical }
+    worldRef.current = { scene, camera, renderer, sampleTerrainY, terrainNormal, marker, vehicleObj: vehicleGroup, crewGroup, crewMixers: [], crewActors: [], scienceGroup, hazardGroup, target, spherical }
 
     let isDragging = false, isPanning = false, prevX = 0, prevY = 0
     const onPointerDown = (e: PointerEvent) => { isDragging = true; isPanning = e.button === 2 || e.shiftKey; prevX = e.clientX; prevY = e.clientY }
@@ -611,33 +612,46 @@ export default function TerrainSimulationView() {
               if (st.crash.type === 'jet' && jetT < 0) w.vehicleObj.position.y += 1.6
             }
 
-            // crew placement on DEM surface (simplified state-driven behavior)
-            const crewVisiblePhases = ['disembarking', 'crew-approach', 'science', 'rover-approach']
+            // crew placement/movement on DEM surface (mission/science phases)
+            const crewVisiblePhases = ['disembarking', 'crew-approach', 'science', 'rover-approach', 'hold', 'complete']
             const showCrew = crewVisiblePhases.includes(st.missionPhase) || (st.sciencePhase !== 'off' && st.sciencePhase !== 'boarding')
             w.crewGroup.visible = showCrew && w.crewGroup.children.length > 0
             if (showCrew) {
               const activeSite = st.scienceSites.find((site: any) => site.id === st.activeSiteId)
               const baseLon = activeSite?.lon ?? s.lon
               const baseLat = activeSite?.lat ?? s.lat
+              const phase = st.sciencePhase !== 'off' ? st.sciencePhase : st.missionPhase
+              const setClip = (actorIdx: number, name: string) => {
+                const actor = w.crewActors[actorIdx]
+                if (!actor) return
+                const want = actor.actions[name] ? name : (actor.actions.Idle ? 'Idle' : actor.current)
+                if (want !== actor.current && actor.actions[want]) {
+                  const prev = actor.actions[actor.current]
+                  const next = actor.actions[want]
+                  if (prev && prev !== next) prev.fadeOut(0.2)
+                  next.reset().fadeIn(0.2).play()
+                  actor.current = want
+                }
+              }
               for (let i = 0; i < w.crewGroup.children.length; i++) {
                 const child = w.crewGroup.children[i] as THREE.Object3D
                 let ox = 0, oz = 0
-                if (st.sciencePhase === 'working' || st.sciencePhase === 'done' || st.missionPhase === 'science') {
-                  const ang = (i / Math.max(1, w.crewGroup.children.length)) * Math.PI * 2
-                  ox = Math.cos(ang) * 2.2
-                  oz = Math.sin(ang) * 2.2
-                } else {
-                  ox = (i - 1) * 1.6
-                  oz = 2.5 + i * 0.8
-                }
-                // offset in local meters approx around base point
+                let face = -s.bearing
+                let clip = 'Walk'
+                if (phase === 'disembarking') { ox = (i - 1) * 1.2; oz = 1.2 + i * 0.6; clip = 'Walk' }
+                else if (phase === 'crew-approach' || phase === 'travelling' || phase === 'approach') { ox = (i - 1) * 1.4; oz = 3.2 + i * 0.7; clip = 'Walk' }
+                else if (phase === 'working' || phase === 'science') { const ang = (i / Math.max(1, w.crewGroup.children.length)) * Math.PI * 2; ox = Math.cos(ang) * 2.0; oz = Math.sin(ang) * 2.0; face = ang + Math.PI; clip = 'Duck' in (w.crewActors[i]?.actions || {}) ? 'Duck' : 'Idle' }
+                else if (phase === 'done') { const ang = (i / Math.max(1, w.crewGroup.children.length)) * Math.PI * 2; ox = Math.cos(ang) * 1.8; oz = Math.sin(ang) * 1.8; face = ang; clip = 'Idle' }
+                else if (phase === 'rover-approach' || phase === 'boarding') { ox = (i - 1) * 1.1; oz = 1.6 + (2 - i) * 0.5; clip = 'Walk' }
+                else { ox = (i - 1) * 1.3; oz = 2.2 + i * 0.6; clip = 'Idle' }
                 const b = st.bounds
                 const bp = lonLatToLocal(baseLon, baseLat, b)
                 const cx = bp.x + ox * 0.08
                 const cz = bp.z + oz * 0.08
                 const cy = w.sampleTerrainY(cx, cz)
                 child.position.set(cx, cy, cz)
-                child.rotation.y = -s.bearing + (st.sciencePhase === 'working' ? Math.PI : 0)
+                child.rotation.y = face
+                setClip(i, clip)
               }
               for (const mixer of w.crewMixers) mixer.update(dt)
             }
@@ -706,6 +720,7 @@ export default function TerrainSimulationView() {
     const group = w.crewGroup
     while (group.children.length) group.remove(group.children[0])
     w.crewMixers = []
+    w.crewActors = []
     let cancelled = false
     const loader = new GLTFLoader()
     CREW_URLS.forEach((url, i) => {
@@ -724,9 +739,16 @@ export default function TerrainSimulationView() {
         group.add(model)
         if (gltf.animations?.length) {
           const mixer = new THREE.AnimationMixer(model)
-          const clip = THREE.AnimationClip.findByName(gltf.animations, 'Walk') || THREE.AnimationClip.findByName(gltf.animations, 'Idle') || gltf.animations[0]
-          if (clip) mixer.clipAction(clip).play()
+          const actions: Record<string, THREE.AnimationAction> = {}
+          for (const name of ['Idle', 'Walk', 'Jump', 'Duck']) {
+            const clip = THREE.AnimationClip.findByName(gltf.animations, name)
+            if (clip) actions[name] = mixer.clipAction(clip)
+          }
+          if (!actions.Idle && gltf.animations[0]) actions.Idle = mixer.clipAction(gltf.animations[0])
+          const start = actions.Idle || Object.values(actions)[0]
+          if (start) start.play()
           w.crewMixers.push(mixer)
+          w.crewActors.push({ mixer, actions, current: start ? (Object.keys(actions).find(k => actions[k] === start) || 'Idle') : 'Idle' })
         }
       }, undefined, () => {})
     })
