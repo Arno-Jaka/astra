@@ -618,6 +618,8 @@ export default function TerrainSimulationView() {
     let bob = 0
     let crashFall = 0
     let lastCrash: any = null
+    let travelT = 0
+    let lastPhase = ''
     const crewPos: { x: number; z: number; init: boolean }[] = []
     const animate = () => {
       animId = requestAnimationFrame(animate)
@@ -728,6 +730,10 @@ export default function TerrainSimulationView() {
               const baseLon = activeSite?.lon ?? s.lon
               const baseLat = activeSite?.lat ?? s.lat
               const phase = st.sciencePhase !== 'off' ? st.sciencePhase : st.missionPhase
+              if (phase !== lastPhase) { lastPhase = phase; if (phase === 'travelling' || phase === 'approach' || phase === 'crew-approach') travelT = 0; if (phase === 'disembarking') travelT = 0.15 }
+              if (phase === 'travelling' || phase === 'approach' || phase === 'crew-approach' || phase === 'disembarking') travelT = Math.min(1, travelT + dt * 0.18)
+              if (phase === 'rover-approach' || phase === 'boarding') travelT = Math.max(0, travelT - dt * 0.2)
+              if (phase === 'working' || phase === 'done' || phase === 'science') travelT = 1
               const bnd = st.bounds
               const bp = lonLatToLocal(baseLon, baseLat, bnd)
               const vp = lonLatToLocal(s.lon, s.lat, bnd)
@@ -749,11 +755,11 @@ export default function TerrainSimulationView() {
                 const ang = (i / Math.max(1, w.crewGroup.children.length)) * Math.PI * 2
                 const side = (i - 1) * 0.11
                 if (phase === 'disembarking') { tx = vp.x + side; tz = vp.z + 0.14 + i * 0.05; clip = 'Walk' }
-                else if (phase === 'crew-approach' || phase === 'approach' || phase === 'travelling') {
-                  // interpolate along ground from vehicle toward active site for locomotion on DEM surface
-                  const k = (phase === 'travelling' || phase === 'approach') ? 0.85 : 0.55
-                  tx = vp.x + (bp.x - vp.x) * k + side * 0.6
-                  tz = vp.z + (bp.z - vp.z) * k + 0.18 + i * 0.04
+                else if (phase === 'crew-approach' || phase === 'approach' || phase === 'travelling' || phase === 'disembarking') {
+                  // progress crew locomotion from vehicle toward site on DEM surface
+                  const k = Math.max(0.08, Math.min(1, travelT)) * (phase === 'disembarking' ? 0.35 : 1)
+                  tx = vp.x + (bp.x - vp.x) * k + side * 0.5
+                  tz = vp.z + (bp.z - vp.z) * k + 0.12 + i * 0.03
                   face = Math.atan2(-(bp.x - vp.x), (bp.z - vp.z))
                   clip = 'Walk'
                 }
@@ -762,7 +768,12 @@ export default function TerrainSimulationView() {
                   tx = bp.x + Math.cos(ang + wobble) * 0.15; tz = bp.z + Math.sin(ang + wobble) * 0.15; face = ang + Math.PI; clip = w.crewActors[i]?.actions['Duck'] ? 'Duck' : 'Idle'
                 }
                 else if (phase === 'done') { tx = bp.x + Math.cos(ang) * 0.13; tz = bp.z + Math.sin(ang) * 0.13; face = ang; clip = 'Idle' }
-                else if (phase === 'rover-approach' || phase === 'boarding') { tx = vp.x + side; tz = vp.z + 0.1 + (2 - i) * 0.04; face = Math.atan2(-(vp.x - bp.x), (vp.z - bp.z)); clip = 'Walk' }
+                else if (phase === 'rover-approach' || phase === 'boarding') {
+                  const k = Math.max(0, Math.min(1, travelT))
+                  tx = bp.x + (vp.x - bp.x) * (1 - k) + side * 0.5
+                  tz = bp.z + (vp.z - bp.z) * (1 - k) + 0.1 + (2 - i) * 0.03
+                  face = Math.atan2(-(vp.x - bp.x), (vp.z - bp.z)); clip = 'Walk'
+                }
                 else { tx = vp.x + side; tz = vp.z + 0.18 + i * 0.04; clip = 'Idle' }
                 if (!crewPos[i]) crewPos[i] = { x: tx, z: tz, init: true }
                 const cp = crewPos[i]
