@@ -3,11 +3,18 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { useAppStore } from '../store/appStore'
 import { useDriveStore } from '../store/driveStore'
+import { useScienceStore } from '../store/scienceStore'
 import { sampleRoute } from '../map/routePath'
+import { SCIENCE_META } from '../map/scienceExperiments'
 
 type Bounds = { west: number; south: number; east: number; north: number }
 
 const MARS_RADIUS_M = 3_396_190
+const CREW_URLS = [
+  new URL('../3D _assets/Astronaut_FinnTheFrog.gltf', import.meta.url).href,
+  new URL('../3D _assets/Astronaut_RaeTheRedPanda.gltf', import.meta.url).href,
+  new URL('../3D _assets/Astronaut_FernandoTheFlamingo.gltf', import.meta.url).href,
+]
 
 function clamp(v: number, lo: number, hi: number) {
   return Math.min(hi, Math.max(lo, v))
@@ -127,6 +134,12 @@ function getVehicleUrl(vehicle: string | undefined) {
   return '/models/perseverance.glb'
 }
 
+function dangerColor(type: string) {
+  if (type === 'cliff') return 0xef4444
+  if (type === 'rollover') return 0xf97316
+  return 0xfacc15
+}
+
 export default function TerrainSimulationView() {
   const containerRef = useRef<HTMLDivElement>(null)
   const route = useAppStore((s) => s.route)
@@ -136,6 +149,13 @@ export default function TerrainSimulationView() {
   const driveTotalKm = useDriveStore((s) => s.totalKm)
   const active = useDriveStore((s) => s.active)
   const vehicle = useDriveStore((s) => s.vehicle)
+  const missionPhase = useDriveStore((s) => s.missionPhase)
+  const crash = useDriveStore((s) => s.crash)
+  const braking = useDriveStore((s) => s.braking)
+  const scienceSites = useScienceStore((s) => s.sites)
+  const activeSiteId = useScienceStore((s) => s.activeSiteId)
+  const sciencePhase = useScienceStore((s) => s.phase)
+  const logs = useScienceStore((s) => s.logs)
 
   const traverse = useMemo(() => {
     if (!route) return null
@@ -159,8 +179,27 @@ export default function TerrainSimulationView() {
     return () => { cancelled = true }
   }, [bounds?.west, bounds?.south, bounds?.east, bounds?.north])
 
-  const stateRef = useRef({ traverse: null as any, bounds: null as Bounds | null, previewT: 0, active: false, driveDistanceKm: 0, driveTotalKm: 0, vehicle: 'rover' as string })
-  stateRef.current = { traverse, bounds, previewT, active, driveDistanceKm, driveTotalKm, vehicle }
+  const stateRef = useRef({
+    traverse: null as any,
+    bounds: null as Bounds | null,
+    previewT: 0,
+    active: false,
+    driveDistanceKm: 0,
+    driveTotalKm: 0,
+    vehicle: 'rover' as string,
+    missionPhase: 'aboard' as string,
+    crash: null as any,
+    braking: false,
+    scienceSites: [] as any[],
+    activeSiteId: null as string | null,
+    sciencePhase: 'off' as string,
+    doneIds: new Set<string>(),
+  })
+  stateRef.current = {
+    traverse, bounds, previewT, active, driveDistanceKm, driveTotalKm, vehicle,
+    missionPhase, crash, braking, scienceSites, activeSiteId, sciencePhase,
+    doneIds: new Set(logs.map((l) => l.siteId)),
+  }
 
   const worldRef = useRef<{
     scene: THREE.Scene
@@ -168,7 +207,11 @@ export default function TerrainSimulationView() {
     renderer: THREE.WebGLRenderer
     sampleTerrainY: (x: number, z: number) => number
     marker: THREE.Mesh
-    vehicleObj: THREE.Object3D
+    vehicleObj: THREE.Group
+    crewGroup: THREE.Group
+    crewMixers: THREE.AnimationMixer[]
+    scienceGroup: THREE.Group
+    hazardGroup: THREE.Group
     target: THREE.Vector3
     spherical: { radius: number; theta: number; phi: number }
   } | null>(null)
@@ -202,8 +245,7 @@ export default function TerrainSimulationView() {
     }
 
     const scene = new THREE.Scene()
-    const skyColor = new THREE.Color(0xc87448)
-    scene.background = skyColor
+    scene.background = new THREE.Color(0xc87448)
     scene.fog = new THREE.FogExp2(0xc46d40, dustHaze)
 
     const camera = new THREE.PerspectiveCamera(55, container.clientWidth / container.clientHeight || 1, 0.5, 1200)
@@ -216,8 +258,7 @@ export default function TerrainSimulationView() {
     renderer.toneMappingExposure = 1.05
     container.appendChild(renderer.domElement)
 
-    const hemiLight = new THREE.HemisphereLight(0xe89b6b, 0x4a1d0d, 0.75)
-    scene.add(hemiLight)
+    scene.add(new THREE.HemisphereLight(0xe89b6b, 0x4a1d0d, 0.75))
     const sunLight = new THREE.DirectionalLight(0xffdfb8, 2.4)
     sunLight.position.set(120, 85, -110)
     sunLight.castShadow = true
@@ -271,7 +312,6 @@ export default function TerrainSimulationView() {
       }
       return 0
     }
-
     const detailHeight = (x: number, z: number, base: number) => {
       const hScale = detailScale
       const rockyGround = noise.ridged(x * 0.24, z * 0.24, 3) * 0.55 * hScale + noise.fbm(x * 0.65, z * 0.65, 2) * 0.22 * hScale
@@ -279,7 +319,6 @@ export default function TerrainSimulationView() {
       const atten = 1 / (1 + Math.abs(base) * 0.12)
       return (rockyGround + smallHills * 0.5) * atten
     }
-
     for (let i = 0; i < posAttr.count; i++) {
       const x = posAttr.getX(i), z = posAttr.getZ(i)
       const base = getBaseHeight(x, z)
@@ -304,6 +343,7 @@ export default function TerrainSimulationView() {
 
     const sampleTerrainY = (x: number, z: number) => getBaseHeight(x, z) + detailHeight(x, z, getBaseHeight(x, z))
 
+    // rocks
     const createRockGeometry = (rockSeed: number) => {
       const rockGeo = new THREE.IcosahedronGeometry(1, 1)
       const rPos = rockGeo.attributes.position
@@ -343,6 +383,11 @@ export default function TerrainSimulationView() {
       scene.add(instMesh)
     })
 
+    const hazardGroup = new THREE.Group(); scene.add(hazardGroup)
+    const scienceGroup = new THREE.Group(); scene.add(scienceGroup)
+    const crewGroup = new THREE.Group(); scene.add(crewGroup)
+
+    // routes & hazards
     if (traverse && bounds) {
       const pts: THREE.Vector3[] = []
       for (const [lon, lat] of traverse.coordinates) {
@@ -354,9 +399,22 @@ export default function TerrainSimulationView() {
         const lineGeo = new THREE.BufferGeometry().setFromPoints(pts)
         scene.add(new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.9 })))
       }
+      const dangers = (traverse as any).dangers ?? []
+      for (const danger of dangers) {
+        const p = lonLatToLocal(danger.lon, danger.lat, bounds)
+        const y = sampleTerrainY(p.x, p.z)
+        const color = dangerColor(danger.type)
+        const ring = new THREE.Mesh(new THREE.RingGeometry(0.6, 1.2, 24), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.7, side: THREE.DoubleSide }))
+        ring.rotation.x = -Math.PI / 2
+        ring.position.set(p.x, y + 0.2, p.z)
+        hazardGroup.add(ring)
+        const cone = new THREE.Mesh(new THREE.ConeGeometry(0.35, 1.2, 12), new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.2 }))
+        cone.position.set(p.x, y + 0.8, p.z)
+        hazardGroup.add(cone)
+      }
     }
 
-    const marker = new THREE.Mesh(new THREE.SphereGeometry(0.9, 18, 18), new THREE.MeshStandardMaterial({ color: 0x22d3ee, emissive: 0x0b4f5a, roughness: 0.4 }))
+    const marker = new THREE.Mesh(new THREE.SphereGeometry(0.8, 18, 18), new THREE.MeshStandardMaterial({ color: 0x22d3ee, emissive: 0x0b4f5a, roughness: 0.4 }))
     marker.castShadow = true
     scene.add(marker)
 
@@ -374,7 +432,7 @@ export default function TerrainSimulationView() {
       camera.lookAt(target)
     }
 
-    worldRef.current = { scene, camera, renderer, sampleTerrainY, marker, vehicleObj: vehicleGroup, target, spherical }
+    worldRef.current = { scene, camera, renderer, sampleTerrainY, marker, vehicleObj: vehicleGroup, crewGroup, crewMixers: [], scienceGroup, hazardGroup, target, spherical }
 
     let isDragging = false, isPanning = false, prevX = 0, prevY = 0
     const onPointerDown = (e: PointerEvent) => { isDragging = true; isPanning = e.button === 2 || e.shiftKey; prevX = e.clientX; prevY = e.clientY }
@@ -408,10 +466,12 @@ export default function TerrainSimulationView() {
     }
     window.addEventListener('resize', handleResize)
 
-    let animId = 0
+    const clock = new THREE.Clock()
     let first = true
+    let animId = 0
     const animate = () => {
       animId = requestAnimationFrame(animate)
+      const dt = clock.getDelta()
       const w = worldRef.current
       if (w) {
         const st = stateRef.current
@@ -421,19 +481,63 @@ export default function TerrainSimulationView() {
             const s = sampleRoute(st.traverse as any, t)
             const p = lonLatToLocal(s.lon, s.lat, st.bounds)
             const y = w.sampleTerrainY(p.x, p.z)
-            w.marker.position.set(p.x, y + 1.2, p.z)
+            const ahead = sampleRoute(st.traverse as any, Math.min(1, t + 0.002))
+            const ap = lonLatToLocal(ahead.lon, ahead.lat, st.bounds)
+            const ay = w.sampleTerrainY(ap.x, ap.z)
+            // surface-normal-ish tilt from local slope
+            const dx = ap.x - p.x, dz = ap.z - p.z, dy = ay - y
+            const len = Math.hypot(dx, dz) || 1
+            const pitch = Math.atan2(-dy, len)
+
+            w.marker.position.set(p.x, y + 1.1, p.z)
             w.marker.visible = true
-            w.vehicleObj.position.set(p.x, y + 0.4, p.z)
-            // bearing: 0=north, clockwise -> in our local coords (x=east, z=south) heading = bearing
-            w.vehicleObj.rotation.y = -s.bearing
-            w.vehicleObj.visible = true
+            w.vehicleObj.position.set(p.x, y + 0.35, p.z)
+            w.vehicleObj.rotation.set(pitch * 0.6, -s.bearing, 0)
+            w.vehicleObj.visible = st.missionPhase === 'aboard' || st.missionPhase === 'rover-approach' || st.missionPhase === 'complete' || st.missionPhase === 'hold' || st.active || t >= 0
+
+            // simple crash/jump visual cues
+            if (st.crash) {
+              w.vehicleObj.rotation.z += st.crash.type === 'rollover' ? 1.2 : 0
+              w.vehicleObj.position.y += st.crash.type === 'fall' ? -0.8 : st.crash.type === 'jet' ? 2.5 : 0
+            }
+
+            // crew placement on DEM surface (simplified state-driven behavior)
+            const crewVisiblePhases = ['disembarking', 'crew-approach', 'science', 'rover-approach']
+            const showCrew = crewVisiblePhases.includes(st.missionPhase) || (st.sciencePhase !== 'off' && st.sciencePhase !== 'boarding')
+            w.crewGroup.visible = showCrew && w.crewGroup.children.length > 0
+            if (showCrew) {
+              const activeSite = st.scienceSites.find((site: any) => site.id === st.activeSiteId)
+              const baseLon = activeSite?.lon ?? s.lon
+              const baseLat = activeSite?.lat ?? s.lat
+              for (let i = 0; i < w.crewGroup.children.length; i++) {
+                const child = w.crewGroup.children[i] as THREE.Object3D
+                let ox = 0, oz = 0
+                if (st.sciencePhase === 'working' || st.sciencePhase === 'done' || st.missionPhase === 'science') {
+                  const ang = (i / Math.max(1, w.crewGroup.children.length)) * Math.PI * 2
+                  ox = Math.cos(ang) * 2.2
+                  oz = Math.sin(ang) * 2.2
+                } else {
+                  ox = (i - 1) * 1.6
+                  oz = 2.5 + i * 0.8
+                }
+                // offset in local meters approx around base point
+                const b = st.bounds
+                const bp = lonLatToLocal(baseLon, baseLat, b)
+                const cx = bp.x + ox * 0.08
+                const cz = bp.z + oz * 0.08
+                const cy = w.sampleTerrainY(cx, cz)
+                child.position.set(cx, cy, cz)
+                child.rotation.y = -s.bearing + (st.sciencePhase === 'working' ? Math.PI : 0)
+              }
+              for (const mixer of w.crewMixers) mixer.update(dt)
+            }
+
             if (first) { w.target.set(p.x, y + 1.5, p.z); first = false }
-          } catch {
-            w.marker.visible = false
-          }
+          } catch { w.marker.visible = false }
         } else {
           w.marker.visible = false
           w.vehicleObj.visible = false
+          w.crewGroup.visible = false
         }
         updateCameraPosition()
       }
@@ -455,44 +559,92 @@ export default function TerrainSimulationView() {
     }
   }, [siteKey, traverse, bounds, dem])
 
-  // Load/swap vehicle model when vehicle type changes
+  // Load vehicle model
   useEffect(() => {
     const w = worldRef.current
     if (!w) return
-    const group = w.vehicleObj as THREE.Group
-    // clear previous
-    while (group.children.length) {
-      const c = group.children[0]
-      group.remove(c)
-    }
-    // placeholder until loaded
+    const group = w.vehicleObj
+    while (group.children.length) group.remove(group.children[0])
     const placeholder = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.7, 2.2), new THREE.MeshStandardMaterial({ color: 0xd97706, roughness: 0.7, metalness: 0.2 }))
     placeholder.position.y = 0.35
     placeholder.castShadow = true
     group.add(placeholder)
-
     let cancelled = false
     const loader = new GLTFLoader()
-    const url = getVehicleUrl(vehicle)
-    loader.load(url, (gltf) => {
+    loader.load(getVehicleUrl(vehicle), (gltf) => {
       if (cancelled || worldRef.current?.vehicleObj !== group) return
       group.clear()
       const model = gltf.scene
-      // Normalize scale roughly for scene (scene units are scaled meters from DEM); adjust per asset
       const box = new THREE.Box3().setFromObject(model)
       const size = new THREE.Vector3(); box.getSize(size)
       const maxDim = Math.max(size.x, size.y, size.z) || 1
       const targetSize = vehicle === 'sev' ? 4.5 : 3.0
       const s = targetSize / maxDim
       model.scale.setScalar(s)
-      // ground-align
       box.setFromObject(model)
       model.position.y -= box.min.y
       model.traverse((obj) => { if ((obj as THREE.Mesh).isMesh) { obj.castShadow = true; obj.receiveShadow = true } })
       group.add(model)
-    }, undefined, () => { /* keep placeholder on failure */ })
+    }, undefined, () => {})
     return () => { cancelled = true }
   }, [vehicle, traverse, bounds, dem, siteKey])
+
+  // Load crew models
+  useEffect(() => {
+    const w = worldRef.current
+    if (!w) return
+    const group = w.crewGroup
+    while (group.children.length) group.remove(group.children[0])
+    w.crewMixers = []
+    let cancelled = false
+    const loader = new GLTFLoader()
+    CREW_URLS.forEach((url, i) => {
+      loader.load(url, (gltf) => {
+        if (cancelled || worldRef.current?.crewGroup !== group) return
+        const model = gltf.scene
+        const box = new THREE.Box3().setFromObject(model)
+        const size = new THREE.Vector3(); box.getSize(size)
+        const maxDim = Math.max(size.x, size.y, size.z) || 1
+        const s = 1.6 / maxDim
+        model.scale.setScalar(s)
+        box.setFromObject(model)
+        model.position.y -= box.min.y
+        model.traverse((obj) => { if ((obj as THREE.Mesh).isMesh) { obj.castShadow = true; obj.receiveShadow = true } })
+        model.userData.crewIndex = i
+        group.add(model)
+        if (gltf.animations?.length) {
+          const mixer = new THREE.AnimationMixer(model)
+          const clip = THREE.AnimationClip.findByName(gltf.animations, 'Walk') || THREE.AnimationClip.findByName(gltf.animations, 'Idle') || gltf.animations[0]
+          if (clip) mixer.clipAction(clip).play()
+          w.crewMixers.push(mixer)
+        }
+      }, undefined, () => {})
+    })
+    return () => { cancelled = true }
+  }, [traverse, bounds, dem, siteKey])
+
+  // Render science site markers in 3D
+  useEffect(() => {
+    const w = worldRef.current
+    if (!w || !bounds) return
+    const g = w.scienceGroup
+    while (g.children.length) g.remove(g.children[0])
+    const done = new Set(logs.map((l) => l.siteId))
+    for (const site of scienceSites) {
+      const p = lonLatToLocal(site.lon, site.lat, bounds)
+      const y = w.sampleTerrainY(p.x, p.z)
+      const isActive = site.id === activeSiteId
+      const isDone = done.has(site.id)
+      const baseColor = isDone ? 0x94a3b8 : (parseInt((SCIENCE_META[site.kind]?.color ?? '#38bdf8').replace('#', ''), 16) || 0x38bdf8)
+      const ring = new THREE.Mesh(new THREE.RingGeometry(isActive ? 1.0 : 0.7, isActive ? 1.6 : 1.1, 28), new THREE.MeshBasicMaterial({ color: baseColor, transparent: true, opacity: isDone ? 0.35 : 0.7, side: THREE.DoubleSide }))
+      ring.rotation.x = -Math.PI / 2
+      ring.position.set(p.x, y + 0.18, p.z)
+      g.add(ring)
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, isActive ? 2.2 : 1.4, 8), new THREE.MeshStandardMaterial({ color: baseColor, emissive: baseColor, emissiveIntensity: isActive ? 0.4 : 0.15 }))
+      pole.position.set(p.x, y + (isActive ? 1.3 : 0.9), p.z)
+      g.add(pole)
+    }
+  }, [scienceSites, activeSiteId, logs, bounds, dem, traverse, siteKey])
 
   return (
     <div className="absolute inset-0 h-full w-full">
@@ -503,7 +655,7 @@ export default function TerrainSimulationView() {
         </div>
       )}
       <div className="pointer-events-none absolute bottom-3 left-3 rounded bg-black/50 px-2 py-1 text-[10px] text-neutral-300 backdrop-blur">
-        3D mode (NASA MOLA contours + procedural detail) · drag orbit · shift-drag pan · scroll zoom
+        3D mode (NASA MOLA contours + procedural detail) · rover/SEV/crew & markers on DEM surface · drag orbit · shift-drag pan · scroll zoom
       </div>
     </div>
   )
