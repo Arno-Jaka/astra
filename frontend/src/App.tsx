@@ -85,24 +85,24 @@ export default function App() {
     <div className="relative h-full w-full overflow-hidden">
       <CesiumMap />
       <FloatingPanel id="status" title="Mission status" width={370} initial={{ left: 16, top: 16 }} fixed>
-      <header className="flex items-center gap-3 px-4 py-2">
-        <span className="text-lg font-semibold tracking-tight text-white">
-          ASTRA
-        </span>
-        <span className="hidden text-[11px] text-neutral-400 sm:block">
-          Mars excursion planner
-        </span>
-        <span className="h-4 w-px bg-white/15" />
-        {healthError ? (
-          <span className="text-xs text-red-400">backend: {healthError}</span>
-        ) : health ? (
-          <span className="text-xs text-emerald-400">
-            backend: {health.status}
+        <header className="flex items-center gap-3 px-4 py-2">
+          <span className="text-lg font-semibold tracking-tight text-white">
+            ASTRA
           </span>
-        ) : (
-          <span className="text-xs text-neutral-400">checking backend…</span>
-        )}
-      </header>
+          <span className="hidden text-[11px] text-neutral-400 sm:block">
+            V1.0.0
+          </span>
+          <span className="h-4 w-px bg-white/15" />
+          {healthError ? (
+            <span className="text-xs text-red-400">backend: {healthError}</span>
+          ) : health ? (
+            <span className="text-xs text-emerald-400">
+              backend: {health.status}
+            </span>
+          ) : (
+            <span className="text-xs text-neutral-400">checking backend…</span>
+          )}
+        </header>
       </FloatingPanel>
 
       <main>
