@@ -1,13 +1,126 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { useAppStore } from '../store/appStore'
 import { useDriveStore } from '../store/driveStore'
+import { sampleRoute } from '../map/routePath'
 
-/**
- * Three.js terrain view for route preview/simulation modes.
- * Based on the provided procedural Mars landform generator (dust haze, no sliders),
- * with route/profile elevation influence for the active traverse/site.
- */
+type Bounds = { west: number; south: number; east: number; north: number }
+
+const MARS_RADIUS_M = 3_396_190
+
+function clamp(v: number, lo: number, hi: number) {
+  return Math.min(hi, Math.max(lo, v))
+}
+
+function wrapLonDelta(lon: number, ref: number) {
+  let d = lon - ref
+  while (d > 180) d -= 360
+  while (d < -180) d += 360
+  return d
+}
+
+function routeBounds(route: { coordinates: [number, number][]; distance_km: number } | null): Bounds | null {
+  const coords = route?.coordinates ?? []
+  if (coords.length < 2) return null
+  const lons = coords.map((c) => c[0])
+  const lats = coords.map((c) => c[1])
+  const refLon = lons[0]
+  const unwrapped = lons.map((l) => refLon + wrapLonDelta(l, refLon))
+  const west = Math.min(...unwrapped)
+  const east = Math.max(...unwrapped)
+  const south = Math.min(...lats)
+  const north = Math.max(...lats)
+  const spanLon = Math.max(east - west, 0.02)
+  const spanLat = Math.max(north - south, 0.02)
+  const padLon = Math.max(spanLon * 0.7, 0.05, (route?.distance_km ?? 1) * 0.015)
+  const padLat = Math.max(spanLat * 0.7, 0.05, (route?.distance_km ?? 1) * 0.015)
+  return {
+    west: clamp(west - padLon, -360, 360),
+    south: clamp(south - padLat, -89.5, 89.5),
+    east: clamp(east + padLon, -360, 360),
+    north: clamp(north + padLat, -89.5, 89.5),
+  }
+}
+
+function lonLatToLocal(lon: number, lat: number, b: Bounds) {
+  const midLat = ((b.north + b.south) / 2) * Math.PI / 180
+  const mPerDegLat = (Math.PI / 180) * MARS_RADIUS_M
+  const mPerDegLon = mPerDegLat * Math.cos(midLat)
+  const lonSpanM = Math.max((b.east - b.west) * mPerDegLon, 1)
+  const latSpanM = Math.max((b.north - b.south) * mPerDegLat, 1)
+  const worldSize = 320
+  const scale = worldSize / Math.max(lonSpanM, latSpanM)
+  const cx = (b.west + b.east) / 2
+  const cy = (b.north + b.south) / 2
+  const x = (lon - cx) * mPerDegLon * scale
+  const z = (cy - lat) * mPerDegLat * scale
+  return { x, z, scale }
+}
+
+function sampleHeightmap(
+  hm: Float32Array, w: number, h: number, b: Bounds, lon: number, lat: number,
+) {
+  const u = clamp((lon - b.west) / Math.max(b.east - b.west, 1e-9), 0, 1)
+  const v = clamp((b.north - lat) / Math.max(b.north - b.south, 1e-9), 0, 1)
+  const fx = u * (w - 1)
+  const fy = v * (h - 1)
+  const x0 = Math.floor(fx), y0 = Math.floor(fy)
+  const x1 = Math.min(w - 1, x0 + 1), y1 = Math.min(h - 1, y0 + 1)
+  const tx = fx - x0, ty = fy - y0
+  const i00 = hm[y0 * w + x0] ?? 0
+  const i10 = hm[y0 * w + x1] ?? 0
+  const i01 = hm[y1 * w + x0] ?? 0
+  const i11 = hm[y1 * w + x1] ?? 0
+  const a = i00 + (i10 - i00) * tx
+  const c = i01 + (i11 - i01) * tx
+  return a + (c - a) * ty
+}
+
+function createNoise2D(seedVal: number) {
+  const hash = (x: number, y: number) => {
+    const n = Math.sin(x * 127.1 + y * 311.7 + seedVal * 74.7) * 43758.5453123
+    return n - Math.floor(n)
+  }
+  const smoothNoise = (x: number, y: number) => {
+    const ix = Math.floor(x), iy = Math.floor(y)
+    const fx = x - ix, fy = y - iy
+    const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy)
+    const a = hash(ix, iy), b = hash(ix + 1, iy), c = hash(ix, iy + 1), d = hash(ix + 1, iy + 1)
+    return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy
+  }
+  const fbm = (x: number, y: number, octaves = 5) => {
+    let value = 0, amp = 0.5, freq = 1
+    for (let i = 0; i < octaves; i++) { value += amp * (smoothNoise(x * freq, y * freq) * 2 - 1); freq *= 2.04; amp *= 0.5 }
+    return value
+  }
+  const ridged = (x: number, y: number, octaves = 5) => {
+    let value = 0, amp = 0.5, freq = 1, weight = 1
+    for (let i = 0; i < octaves; i++) {
+      let signal = 1 - Math.abs(smoothNoise(x * freq, y * freq) * 2 - 1)
+      signal *= signal; signal *= weight; weight = Math.max(0, Math.min(1, signal * 1.8))
+      value += signal * amp; freq *= 2.12; amp *= 0.5
+    }
+    return value
+  }
+  return { hash, fbm, ridged }
+}
+
+async function fetchDemTile(b: Bounds, width = 128, height = 128): Promise<Float32Array | null> {
+  const params = new URLSearchParams({
+    west: String(b.west), south: String(b.south), east: String(b.east), north: String(b.north),
+    width: String(width), height: String(height),
+  })
+  try {
+    const res = await fetch(`/api/dem/tile?${params}`)
+    if (!res.ok) return null
+    const buf = await res.arrayBuffer()
+    if (buf.byteLength !== width * height * 4) return null
+    return new Float32Array(buf)
+  } catch {
+    return null
+  }
+}
+
 export default function TerrainSimulationView() {
   const containerRef = useRef<HTMLDivElement>(null)
   const route = useAppStore((s) => s.route)
@@ -28,55 +141,68 @@ export default function TerrainSimulationView() {
     return previewT
   }, [active, driveDistanceKm, driveTotalKm, previewT])
 
+  const bounds = useMemo(() => routeBounds(traverse), [traverse])
   const siteKey = (route?.end || route?.start || 'mars').toLowerCase()
+
+  const [dem, setDem] = useState<{ data: Float32Array; w: number; h: number; b: Bounds } | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    if (!bounds) { setDem(null); return }
+    const b = bounds
+    ;(async () => {
+      const data = await fetchDemTile(b, 128, 128)
+      if (cancelled) return
+      setDem(data ? { data, w: 128, h: 128, b } : null)
+    })()
+    return () => { cancelled = true }
+  }, [bounds?.west, bounds?.south, bounds?.east, bounds?.north])
+
+  const routeLocalPoints = useMemo(() => {
+    if (!traverse || !bounds) return null
+    const b = bounds
+    return traverse.coordinates.map(([lon, lat], i) => {
+      const p = lonLatToLocal(lon, lat, b)
+      const prof = traverse.profile[i]
+      const elev = (typeof prof?.elevation_m === 'number' ? prof.elevation_m : null)
+      return { ...p, lon, lat, elev }
+    })
+  }, [traverse, bounds])
 
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
 
-    const params = {
-      seed: 42,
-      mountainHeight: 1.0,
-      hillRoughness: 1.0,
-      rockDensity: 1.0,
-      dustHaze: 0.0085,
-    }
-
-    // Site-aware presets for prominent Mars locations (procedural styling to evoke site character).
-    const presets: Record<string, Partial<typeof params>> = {
-      'gale crater': { seed: 137, mountainHeight: 1.2, hillRoughness: 0.9, rockDensity: 0.9, dustHaze: 0.008 },
-      'mount sharp': { seed: 138, mountainHeight: 1.7, hillRoughness: 1.0, rockDensity: 0.8, dustHaze: 0.0075 },
-      'jezero crater': { seed: 77, mountainHeight: 0.8, hillRoughness: 1.0, rockDensity: 1.0, dustHaze: 0.009 },
-      'olympus mons': { seed: 226, mountainHeight: 1.8, hillRoughness: 0.7, rockDensity: 0.6, dustHaze: 0.006 },
-      'valles marineris': { seed: 301, mountainHeight: 1.6, hillRoughness: 1.3, rockDensity: 1.1, dustHaze: 0.009 },
-      'hellas planitia': { seed: 70, mountainHeight: 0.7, hillRoughness: 0.8, rockDensity: 0.9, dustHaze: 0.01 },
-      'elysium mons': { seed: 147, mountainHeight: 1.4, hillRoughness: 0.8, rockDensity: 0.7, dustHaze: 0.0075 },
-      'gusev crater': { seed: 175, mountainHeight: 0.9, hillRoughness: 1.0, rockDensity: 1.0, dustHaze: 0.009 },
-      'meridiani planum': { seed: 357, mountainHeight: 0.5, hillRoughness: 0.7, rockDensity: 0.8, dustHaze: 0.0085 },
+    let seed = 42
+    let dustHaze = 0.0085
+    let detailScale = 1.0
+    let rockDensity = 1.0
+    const presets: Record<string, { seed?: number; dustHaze?: number; detailScale?: number; rockDensity?: number }> = {
+      'gale crater': { seed: 137, dustHaze: 0.008, detailScale: 1.0, rockDensity: 0.9 },
+      'mount sharp': { seed: 138, dustHaze: 0.0075, detailScale: 1.2, rockDensity: 0.8 },
+      'jezero crater': { seed: 77, dustHaze: 0.009, detailScale: 1.0, rockDensity: 1.0 },
+      'olympus mons': { seed: 226, dustHaze: 0.006, detailScale: 0.8, rockDensity: 0.6 },
+      'valles marineris': { seed: 301, dustHaze: 0.009, detailScale: 1.3, rockDensity: 1.1 },
+      'hellas planitia': { seed: 70, dustHaze: 0.01, detailScale: 0.8, rockDensity: 0.9 },
+      'elysium mons': { seed: 147, dustHaze: 0.0075, detailScale: 0.9, rockDensity: 0.7 },
+      'gusev crater': { seed: 175, dustHaze: 0.009, detailScale: 1.0, rockDensity: 1.0 },
+      'meridiani planum': { seed: 357, dustHaze: 0.0085, detailScale: 0.7, rockDensity: 0.8 },
     }
     for (const [name, preset] of Object.entries(presets)) {
-      if (siteKey.includes(name)) Object.assign(params, preset)
-    }
-
-    // Influence terrain from route elevation profile (real MOLA/DEM-derived traverse data).
-    const profile = traverse?.profile ?? []
-    const elevations = profile.map((p) => p.elevation_m).filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
-    const grades = profile.map((p) => p.grade_deg).filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
-    if (elevations.length >= 2) {
-      const minE = Math.min(...elevations)
-      const maxE = Math.max(...elevations)
-      const relief = Math.max(0, maxE - minE)
-      const maxGrade = grades.length ? Math.max(...grades.map(Math.abs)) : 0
-      params.mountainHeight = Math.min(1.8, Math.max(0.4, params.mountainHeight * (0.7 + relief / 6000)))
-      params.hillRoughness = Math.min(1.8, Math.max(0.4, params.hillRoughness * (0.7 + maxGrade / 30)))
+      if (siteKey.includes(name)) {
+        seed = preset.seed ?? seed
+        dustHaze = preset.dustHaze ?? dustHaze
+        detailScale = preset.detailScale ?? detailScale
+        rockDensity = preset.rockDensity ?? rockDensity
+      }
     }
 
     const scene = new THREE.Scene()
     const skyColor = new THREE.Color(0xc87448)
     scene.background = skyColor
-    scene.fog = new THREE.FogExp2(0xc46d40, params.dustHaze)
+    scene.fog = new THREE.FogExp2(0xc46d40, dustHaze)
 
-    const camera = new THREE.PerspectiveCamera(55, container.clientWidth / container.clientHeight || 1, 0.5, 1000)
+    const camera = new THREE.PerspectiveCamera(55, container.clientWidth / container.clientHeight || 1, 0.5, 1200)
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
     renderer.setSize(container.clientWidth, container.clientHeight)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
@@ -94,195 +220,171 @@ export default function TerrainSimulationView() {
     sunLight.shadow.mapSize.width = 2048
     sunLight.shadow.mapSize.height = 2048
     sunLight.shadow.camera.near = 10
-    sunLight.shadow.camera.far = 450
-    const d = 160
-    sunLight.shadow.camera.left = -d
-    sunLight.shadow.camera.right = d
-    sunLight.shadow.camera.top = d
-    sunLight.shadow.camera.bottom = -d
+    sunLight.shadow.camera.far = 500
+    const d = 180
+    sunLight.shadow.camera.left = -d; sunLight.shadow.camera.right = d; sunLight.shadow.camera.top = d; sunLight.shadow.camera.bottom = -d
     sunLight.shadow.bias = -0.0005
     scene.add(sunLight)
     const sunDisc = new THREE.Mesh(new THREE.CircleGeometry(12, 32), new THREE.MeshBasicMaterial({ color: 0xfff0dd, fog: false }))
-    sunDisc.position.copy(sunLight.position).normalize().multiplyScalar(420)
+    sunDisc.position.copy(sunLight.position).normalize().multiplyScalar(460)
     sunDisc.lookAt(0, 0, 0)
     scene.add(sunDisc)
 
-    const createNoise2D = (seedVal: number) => {
-      const hash = (x: number, y: number) => {
-        const n = Math.sin(x * 127.1 + y * 311.7 + seedVal * 74.7) * 43758.5453123
-        return n - Math.floor(n)
-      }
-      const smoothNoise = (x: number, y: number) => {
-        const ix = Math.floor(x), iy = Math.floor(y)
-        const fx = x - ix, fy = y - iy
-        const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy)
-        const a = hash(ix, iy), b = hash(ix + 1, iy), c = hash(ix, iy + 1), d = hash(ix + 1, iy + 1)
-        return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy
-      }
-      const fbm = (x: number, y: number, octaves = 5) => {
-        let value = 0, amp = 0.5, freq = 1
-        for (let i = 0; i < octaves; i++) { value += amp * (smoothNoise(x * freq, y * freq) * 2 - 1); freq *= 2.04; amp *= 0.5 }
-        return value
-      }
-      const ridged = (x: number, y: number, octaves = 5) => {
-        let value = 0, amp = 0.5, freq = 1, weight = 1
-        for (let i = 0; i < octaves; i++) {
-          let signal = 1 - Math.abs(smoothNoise(x * freq, y * freq) * 2 - 1)
-          signal *= signal; signal *= weight; weight = Math.max(0, Math.min(1, signal * 1.8))
-          value += signal * amp; freq *= 2.12; amp *= 0.5
-        }
-        return value
-      }
-      return { hash, fbm, ridged }
+    const noise = createNoise2D(seed)
+    const terrainSize = 320
+    const segments = 220
+    const geo = new THREE.PlaneGeometry(terrainSize, terrainSize, segments, segments)
+    geo.rotateX(-Math.PI / 2)
+    const posAttr = geo.attributes.position
+    const colors = new Float32Array(posAttr.count * 3)
+
+    // Determine elevation base/range from DEM (real MOLA data) or route profile fallback
+    let baseElev = 0
+    let elevScale = 0.015
+    if (dem) {
+      let minE = Infinity, maxE = -Infinity
+      for (let i = 0; i < dem.data.length; i++) { const v = dem.data[i]; if (v < minE) minE = v; if (v > maxE) maxE = v }
+      if (isFinite(minE) && isFinite(maxE)) { baseElev = (minE + maxE) / 2; elevScale = 0.02 }
+    } else if (traverse?.profile?.length) {
+      const es = traverse.profile.map((p) => p.elevation_m).filter((v): v is number => typeof v === 'number')
+      if (es.length) { baseElev = (Math.min(...es) + Math.max(...es)) / 2; elevScale = 0.02 }
     }
 
-    let terrainMesh: THREE.Mesh | null = null
-    let rockInstancedMeshes: THREE.InstancedMesh[] = []
-
-    const buildMarsLandscape = () => {
-      if (terrainMesh) { scene.remove(terrainMesh); terrainMesh.geometry.dispose(); (terrainMesh.material as THREE.Material).dispose() }
-      rockInstancedMeshes.forEach((m) => { scene.remove(m); m.geometry.dispose(); (m.material as THREE.Material).dispose() })
-      rockInstancedMeshes = []
-
-      const noise = createNoise2D(params.seed)
-      const terrainSize = 320
-      const segments = 240
-      const geo = new THREE.PlaneGeometry(terrainSize, terrainSize, segments, segments)
-      geo.rotateX(-Math.PI / 2)
-      const posAttr = geo.attributes.position
-      const colors = new Float32Array(posAttr.count * 3)
-
-      const craters: { x: number; z: number; radius: number; depth: number }[] = []
-      for (let c = 0; c < 10; c++) {
-        craters.push({
-          x: (noise.hash(c, 1.3) - 0.5) * (terrainSize * 0.72),
-          z: (noise.hash(c, 7.9) - 0.5) * (terrainSize * 0.72),
-          radius: 7 + noise.hash(c, 4.1) * 18,
-          depth: 1.8 + noise.hash(c, 9.2) * 3.5,
-        })
+    const getBaseHeight = (x: number, z: number) => {
+      if (dem) {
+        const b = dem.b
+        const midLat = ((b.north + b.south) / 2) * Math.PI / 180
+        const mPerDegLat = (Math.PI / 180) * MARS_RADIUS_M
+        const mPerDegLon = mPerDegLat * Math.cos(midLat)
+        const lonSpanM = Math.max((b.east - b.west) * mPerDegLon, 1)
+        const latSpanM = Math.max((b.north - b.south) * mPerDegLat, 1)
+        const scale = terrainSize / Math.max(lonSpanM, latSpanM)
+        const cx = (b.west + b.east) / 2
+        const cy = (b.north + b.south) / 2
+        const lon = cx + x / (mPerDegLon * scale)
+        const lat = cy - z / (mPerDegLat * scale)
+        const elev = sampleHeightmap(dem.data, dem.w, dem.h, b, lon, lat)
+        return (elev - baseElev) * elevScale
       }
-
-      // Sample route profile into a local relief strip so contours reflect traverse data.
-      const profileSamples = (() => {
-        if (elevations.length < 2) return null
-        const minE = Math.min(...elevations), maxE = Math.max(...elevations)
-        const scale = Math.max(1, maxE - minE)
-        return profile
-          .map((p, i) => ({ t: profile.length > 1 ? i / (profile.length - 1) : 0, h: typeof p.elevation_m === 'number' ? (p.elevation_m - minE) / scale : 0.5, g: Math.abs(p.grade_deg ?? 0) }))
-      })()
-
-      const routeRelief = (x: number, z: number) => {
-        if (!profileSamples || profileSamples.length < 2) return 0
-        // Route runs roughly along local -Z to +Z axis through center corridor.
-        const t = Math.max(0, Math.min(1, (z + terrainSize * 0.35) / (terrainSize * 0.7)))
-        const idx = t * (profileSamples.length - 1)
-        const i0 = Math.floor(idx), i1 = Math.min(profileSamples.length - 1, i0 + 1)
-        const f = idx - i0
-        const s0 = profileSamples[i0], s1 = profileSamples[i1]
-        const h = s0.h + (s1.h - s0.h) * f
-        const g = s0.g + (s1.g - s0.g) * f
-        const corridor = Math.exp(-Math.pow(x / 28, 2))
-        return corridor * ((h - 0.5) * 18 * params.mountainHeight + (g / 25) * 6 * params.hillRoughness)
-      }
-
-      const getElevation = (x: number, z: number) => {
-        const distFromCenter = Math.hypot(x, z)
-        const rimFactor = Math.max(0, (distFromCenter - 45) / 115)
-        const bigMountainMask = Math.pow(Math.max(0, noise.fbm(x * 0.008 + 3.1, z * 0.008 - 1.7, 3) + 0.45), 1.7)
-        const bigMountains = noise.ridged(x * 0.011, z * 0.011, 5) * 34.0 * params.mountainHeight * (0.35 + rimFactor * 1.15) * bigMountainMask
-        const smallMountainMask = Math.max(0, noise.fbm(x * 0.022 - 5.4, z * 0.022 + 2.8, 3) + 0.25)
-        const smallMountains = noise.ridged(x * 0.028 + 11.2, z * 0.028 - 8.6, 4) * 13.5 * params.mountainHeight * smallMountainMask
-        const bigHills = (noise.fbm(x * 0.024, z * 0.024, 4) * 0.65 + noise.ridged(x * 0.032, z * 0.032, 3) * 0.35) * 8.5 * params.hillRoughness
-        const smallHills = noise.fbm(x * 0.075 + 4.2, z * 0.075 - 3.9, 4) * 2.4 * params.hillRoughness
-        const rockyGround = noise.ridged(x * 0.24, z * 0.24, 3) * 0.55 * params.hillRoughness + noise.fbm(x * 0.65, z * 0.65, 2) * 0.22 * params.hillRoughness
-        let height = bigMountains + smallMountains + bigHills + smallHills + rockyGround + routeRelief(x, z)
-        for (let c = 0; c < craters.length; c++) {
-          const cr = craters[c]; const distC = Math.hypot(x - cr.x, z - cr.z)
-          if (distC < cr.radius * 1.45) {
-            const norm = distC / cr.radius
-            if (norm < 1) height += (norm * norm - 1) * cr.depth
-            else height += Math.exp(-Math.pow((norm - 1.05) * 5, 2)) * (cr.depth * 0.35)
-          }
+      // Fallback: shape from route elevation profile along corridor
+      if (routeLocalPoints && routeLocalPoints.length >= 2) {
+        let bestI = 0, bestD = Infinity
+        for (let i = 0; i < routeLocalPoints.length; i++) {
+          const p = routeLocalPoints[i]; const dx = x - p.x, dz = z - p.z; const d = dx * dx + dz * dz
+          if (d < bestD) { bestD = d; bestI = i }
         }
-        return height
+        const e = routeLocalPoints[bestI].elev
+        if (typeof e === 'number') return (e - baseElev) * elevScale
       }
+      return 0
+    }
 
-      for (let i = 0; i < posAttr.count; i++) posAttr.setY(i, getElevation(posAttr.getX(i), posAttr.getZ(i)))
-      geo.computeVertexNormals()
-      const normAttr = geo.attributes.normal
-      const colorDust = new THREE.Color(0xc86438), colorRegolith = new THREE.Color(0x9c4224), colorBasalt = new THREE.Color(0x47281e), colorPeak = new THREE.Color(0xdba076), tempColor = new THREE.Color()
-      for (let i = 0; i < posAttr.count; i++) {
-        const x = posAttr.getX(i), y = posAttr.getY(i), z = posAttr.getZ(i), ny = normAttr.getY(i)
-        const slope = 1 - Math.max(0, Math.min(1, ny))
-        const mineralPatch = noise.fbm(x * 0.05, z * 0.05, 3) * 0.5 + 0.5
-        tempColor.copy(colorDust).lerp(colorRegolith, mineralPatch * 0.75)
-        tempColor.lerp(colorBasalt, Math.min(1, Math.pow(slope * 2.4, 1.4)) * 0.88)
-        if (y > 14) tempColor.lerp(colorPeak, Math.min(1, (y - 14) / 22) * (1 - Math.min(1, Math.pow(slope * 2.4, 1.4)) * 0.5) * 0.55)
-        colors[i * 3] = tempColor.r; colors[i * 3 + 1] = tempColor.g; colors[i * 3 + 2] = tempColor.b
+    // Procedural detail layered on top of real DEM contours (inspired by generator)
+    const detailHeight = (x: number, z: number, base: number) => {
+      const hScale = detailScale
+      const rockyGround = noise.ridged(x * 0.24, z * 0.24, 3) * 0.55 * hScale + noise.fbm(x * 0.65, z * 0.65, 2) * 0.22 * hScale
+      const smallHills = noise.fbm(x * 0.075 + 4.2, z * 0.075 - 3.9, 4) * 1.4 * hScale
+      // attenuate added relief on very steep DEM slopes to preserve real contours
+      const atten = 1 / (1 + Math.abs(base) * 0.12)
+      return (rockyGround + smallHills * 0.5) * atten
+    }
+
+    for (let i = 0; i < posAttr.count; i++) {
+      const x = posAttr.getX(i), z = posAttr.getZ(i)
+      const base = getBaseHeight(x, z)
+      posAttr.setY(i, base + detailHeight(x, z, base))
+    }
+    geo.computeVertexNormals()
+    const normAttr = geo.attributes.normal
+    const colorDust = new THREE.Color(0xc86438), colorRegolith = new THREE.Color(0x9c4224), colorBasalt = new THREE.Color(0x47281e), colorPeak = new THREE.Color(0xdba076), tempColor = new THREE.Color()
+    for (let i = 0; i < posAttr.count; i++) {
+      const x = posAttr.getX(i), y = posAttr.getY(i), z = posAttr.getZ(i), ny = normAttr.getY(i)
+      const slope = 1 - Math.max(0, Math.min(1, ny))
+      const mineralPatch = noise.fbm(x * 0.05, z * 0.05, 3) * 0.5 + 0.5
+      tempColor.copy(colorDust).lerp(colorRegolith, mineralPatch * 0.75)
+      tempColor.lerp(colorBasalt, Math.min(1, Math.pow(slope * 2.4, 1.4)) * 0.88)
+      if (y > 10) tempColor.lerp(colorPeak, Math.min(1, (y - 10) / 22) * (1 - Math.min(1, Math.pow(slope * 2.4, 1.4)) * 0.5) * 0.55)
+      colors[i * 3] = tempColor.r; colors[i * 3 + 1] = tempColor.g; colors[i * 3 + 2] = tempColor.b
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+    const terrainMesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.94, metalness: 0.04, flatShading: true }))
+    terrainMesh.receiveShadow = true; terrainMesh.castShadow = true
+    scene.add(terrainMesh)
+
+    const sampleTerrainY = (x: number, z: number) => getBaseHeight(x, z) + detailHeight(x, z, getBaseHeight(x, z))
+
+    // Instanced rocks (procedural detail), biased a bit toward route corridor when available
+    const createRockGeometry = (rockSeed: number) => {
+      const rockGeo = new THREE.IcosahedronGeometry(1, 1)
+      const rPos = rockGeo.attributes.position
+      const rNoise = createNoise2D(rockSeed)
+      for (let i = 0; i < rPos.count; i++) {
+        const vx = rPos.getX(i), vy = rPos.getY(i), vz = rPos.getZ(i)
+        const n = 0.72 + rNoise.fbm(vx * 1.8 + vy, vz * 1.8 - vy, 3) * 0.48
+        rPos.setXYZ(i, vx * n, vy * n * 0.72, vz * n)
       }
-      geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
-      terrainMesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.94, metalness: 0.04, flatShading: true }))
-      terrainMesh.receiveShadow = true; terrainMesh.castShadow = true
-      scene.add(terrainMesh)
-
-      // Rocks/boulders (reduced count for performance in app view)
-      const createRockGeometry = (rockSeed: number) => {
-        const rockGeo = new THREE.IcosahedronGeometry(1, 1)
-        const rPos = rockGeo.attributes.position
-        const rNoise = createNoise2D(rockSeed)
-        for (let i = 0; i < rPos.count; i++) {
-          const vx = rPos.getX(i), vy = rPos.getY(i), vz = rPos.getZ(i)
-          const n = 0.72 + rNoise.fbm(vx * 1.8 + vy, vz * 1.8 - vy, 3) * 0.48
-          rPos.setXYZ(i, vx * n, vy * n * 0.72, vz * n)
-        }
-        rockGeo.computeVertexNormals()
-        return rockGeo
+      rockGeo.computeVertexNormals()
+      return rockGeo
+    }
+    const rockVariants = [createRockGeometry(seed + 101), createRockGeometry(seed + 202), createRockGeometry(seed + 303)]
+    const rockMat = new THREE.MeshStandardMaterial({ color: 0x6b3524, roughness: 0.92, metalness: 0.05, flatShading: true })
+    const totalRocks = Math.floor(700 * rockDensity)
+    const rocksPerVariant = Math.max(1, Math.floor(totalRocks / rockVariants.length))
+    const dummy = new THREE.Object3D(), rockTint = new THREE.Color()
+    const rockMeshes: THREE.InstancedMesh[] = []
+    rockVariants.forEach((variantGeo, vIdx) => {
+      const instMesh = new THREE.InstancedMesh(variantGeo, rockMat, rocksPerVariant)
+      instMesh.castShadow = true; instMesh.receiveShadow = true
+      for (let i = 0; i < rocksPerVariant; i++) {
+        const idx = vIdx * rocksPerVariant + i
+        const rx = (noise.hash(idx, 1.1) - 0.5) * (terrainSize * 0.9)
+        const rz = (noise.hash(idx, 2.3) - 0.5) * (terrainSize * 0.9)
+        const ry = sampleTerrainY(rx, rz)
+        const sizeRoll = Math.pow(noise.hash(idx, 3.7), 3.4)
+        const scaleBase = 0.18 + sizeRoll * 2.6
+        dummy.position.set(rx, ry - scaleBase * 0.18, rz)
+        dummy.rotation.set(noise.hash(idx, 4.1) * Math.PI, noise.hash(idx, 5.2) * Math.PI * 2, noise.hash(idx, 6.3) * Math.PI)
+        dummy.scale.set(scaleBase * (0.8 + noise.hash(idx, 7.4) * 0.6), scaleBase * (0.65 + noise.hash(idx, 8.5) * 0.5), scaleBase * (0.8 + noise.hash(idx, 9.6) * 0.6))
+        dummy.updateMatrix(); instMesh.setMatrixAt(i, dummy.matrix)
+        const shade = 0.65 + noise.hash(idx, 10.7) * 0.55
+        rockTint.setRGB(0.45 * shade, 0.22 * shade, 0.15 * shade); instMesh.setColorAt(i, rockTint)
       }
-      const rockVariants = [createRockGeometry(params.seed + 101), createRockGeometry(params.seed + 202), createRockGeometry(params.seed + 303)]
-      const rockMat = new THREE.MeshStandardMaterial({ color: 0x6b3524, roughness: 0.92, metalness: 0.05, flatShading: true })
-      const totalRocks = Math.floor(900 * params.rockDensity)
-      const rocksPerVariant = Math.max(1, Math.floor(totalRocks / rockVariants.length))
-      const dummy = new THREE.Object3D(), rockTint = new THREE.Color()
-      rockVariants.forEach((variantGeo, vIdx) => {
-        const instMesh = new THREE.InstancedMesh(variantGeo, rockMat, rocksPerVariant)
-        instMesh.castShadow = true; instMesh.receiveShadow = true
-        for (let i = 0; i < rocksPerVariant; i++) {
-          const idx = vIdx * rocksPerVariant + i
-          const rx = (noise.hash(idx, 1.1) - 0.5) * (terrainSize * 0.9)
-          const rz = (noise.hash(idx, 2.3) - 0.5) * (terrainSize * 0.9)
-          const ry = getElevation(rx, rz)
-          const sizeRoll = Math.pow(noise.hash(idx, 3.7), 3.4)
-          const scaleBase = 0.22 + sizeRoll * 3.1
-          dummy.position.set(rx, ry - scaleBase * 0.18, rz)
-          dummy.rotation.set(noise.hash(idx, 4.1) * Math.PI, noise.hash(idx, 5.2) * Math.PI * 2, noise.hash(idx, 6.3) * Math.PI)
-          dummy.scale.set(scaleBase * (0.8 + noise.hash(idx, 7.4) * 0.6), scaleBase * (0.65 + noise.hash(idx, 8.5) * 0.5), scaleBase * (0.8 + noise.hash(idx, 9.6) * 0.6))
-          dummy.updateMatrix(); instMesh.setMatrixAt(i, dummy.matrix)
-          const shade = 0.65 + noise.hash(idx, 10.7) * 0.55
-          rockTint.setRGB(0.45 * shade, 0.22 * shade, 0.15 * shade); instMesh.setColorAt(i, rockTint)
-        }
-        instMesh.instanceMatrix.needsUpdate = true
-        if (instMesh.instanceColor) instMesh.instanceColor.needsUpdate = true
-        scene.add(instMesh); rockInstancedMeshes.push(instMesh)
-      })
+      instMesh.instanceMatrix.needsUpdate = true
+      if (instMesh.instanceColor) instMesh.instanceColor.needsUpdate = true
+      scene.add(instMesh); rockMeshes.push(instMesh)
+    })
 
-      // Route/progress marker (visual aid over terrain corridor)
-      const markerZ = -terrainSize * 0.35 + progressT * terrainSize * 0.7
-      const markerY = getElevation(0, markerZ)
-      const marker = new THREE.Mesh(new THREE.SphereGeometry(1.2, 20, 20), new THREE.MeshStandardMaterial({ color: 0x22d3ee, emissive: 0x0b4f5a, roughness: 0.4 }))
-      marker.position.set(0, markerY + 1.4, markerZ)
+    // Route polyline & progress marker in local DEM-mapped space (mimics real traverse contour)
+    let marker: THREE.Mesh | null = null
+    if (traverse && dem && bounds) {
+      const pts: THREE.Vector3[] = []
+      for (const [lon, lat] of traverse.coordinates) {
+        const p = lonLatToLocal(lon, lat, bounds)
+        const y = sampleTerrainY(p.x, p.z)
+        pts.push(new THREE.Vector3(p.x, y + 0.25, p.z))
+      }
+      if (pts.length >= 2) {
+        const lineGeo = new THREE.BufferGeometry().setFromPoints(pts)
+        const line = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.9 }))
+        scene.add(line)
+      }
+      const s = sampleRoute(traverse as any, progressT)
+      const p = lonLatToLocal(s.lon, s.lat, bounds)
+      const y = sampleTerrainY(p.x, p.z)
+      marker = new THREE.Mesh(new THREE.SphereGeometry(1.1, 20, 20), new THREE.MeshStandardMaterial({ color: 0x22d3ee, emissive: 0x0b4f5a, roughness: 0.4 }))
+      marker.position.set(p.x, y + 1.3, p.z)
       marker.castShadow = true
       scene.add(marker)
     }
 
-    buildMarsLandscape()
-
-    // Camera controls (integrated orbit/pan/zoom)
+    // Camera controls
     let isDragging = false, isPanning = false, prevX = 0, prevY = 0
-    const spherical = { radius: 88, theta: 0.65, phi: 1.24 }
-    const target = new THREE.Vector3(0, 6, 0)
+    const spherical = { radius: 95, theta: 0.65, phi: 1.22 }
+    const target = marker ? marker.position.clone() : new THREE.Vector3(0, 4, 0)
+    if (marker) { target.y = Math.max(target.y - 1, 0); spherical.radius = 70 }
     const updateCameraPosition = () => {
       spherical.phi = Math.max(0.15, Math.min(Math.PI / 2 - 0.04, spherical.phi))
-      spherical.radius = Math.max(14, Math.min(210, spherical.radius))
+      spherical.radius = Math.max(12, Math.min(240, spherical.radius))
       camera.position.x = target.x + spherical.radius * Math.sin(spherical.phi) * Math.sin(spherical.theta)
       camera.position.y = target.y + spherical.radius * Math.cos(spherical.phi)
       camera.position.z = target.z + spherical.radius * Math.sin(spherical.phi) * Math.cos(spherical.theta)
@@ -298,7 +400,7 @@ export default function TerrainSimulationView() {
         const panSpeed = spherical.radius * 0.0012
         const right = new THREE.Vector3(); camera.getWorldDirection(right); right.cross(camera.up).normalize()
         target.addScaledVector(right, -dx * panSpeed)
-        target.y = Math.max(-5, Math.min(45, target.y + dy * panSpeed))
+        target.y = Math.max(-10, Math.min(60, target.y + dy * panSpeed))
       } else { spherical.theta -= dx * 0.0055; spherical.phi -= dy * 0.0055 }
       updateCameraPosition()
     }
@@ -336,7 +438,16 @@ export default function TerrainSimulationView() {
       renderer.dispose()
       if (domElem && container.contains(domElem)) container.removeChild(domElem)
     }
-  }, [siteKey, traverse, progressT, routePhase])
+  }, [siteKey, traverse, bounds, dem, routeLocalPoints, progressT, routePhase])
 
-  return <div ref={containerRef} className="absolute inset-0 h-full w-full" />
+  return (
+    <div className="absolute inset-0 h-full w-full">
+      <div ref={containerRef} className="h-full w-full" />
+      {!dem && traverse && (
+        <div className="pointer-events-none absolute left-3 top-3 rounded bg-black/50 px-2 py-1 text-[10px] text-neutral-200 backdrop-blur">
+          Loading NASA MOLA terrain contours…
+        </div>
+      )}
+    </div>
+  )
 }
