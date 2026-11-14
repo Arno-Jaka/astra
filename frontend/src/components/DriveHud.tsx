@@ -6,7 +6,7 @@ export default function DriveHud() {
   const active = useDriveStore((state) => state.active)
   const vehicle = useDriveStore(state => state.vehicle)
   const missionPhase = useDriveStore(state => state.missionPhase)
-  const onFoot = missionPhase === 'crew-approach' || missionPhase === 'disembarking'
+  const onFoot = missionPhase === 'crew-approach' || missionPhase === 'disembarking' || missionPhase === 'science'
   const jump = useDriveStore(state => state.jump)
   const vehicleName = onFoot ? 'Crew of 3 · Mars surface' : vehicle === 'sev' ? 'Space Exploration Vehicle' : 'Robotic rover'
   const distanceKm = useDriveStore((state) => state.distanceKm)
@@ -55,7 +55,7 @@ export default function DriveHud() {
         <p className="mb-2 text-[10px] uppercase tracking-widest text-cyan-200" role="status">
           {loading ? `Preparing terrain & ${vehicleName}…` : crash ? 'Rover failure · simulated dynamics' : braking ? stopping ? 'Braking · ending traverse' : 'Braking · pausing' : paused ? `${vehicleName} · paused` : arriving ? 'Approaching destination · decelerating' : `${vehicleName} · following route`}
         </p>
-        <p className="mb-2 text-cyan-200">{missionPhase === 'aboard' ? '3 crew aboard · driving to staging' : missionPhase === 'disembarking' ? 'Finn, Rae & Fernando · exiting SEV' : missionPhase === 'crew-approach' ? 'Crew final approach · SEV parked' : missionPhase === 'rover-approach' ? 'Rover deployed · 3 crew hold at SEV' : missionPhase}</p>
+        <p className="mb-2 text-cyan-200">{missionPhase === 'aboard' ? '3 crew aboard · driving to staging' : missionPhase === 'disembarking' ? 'Finn, Rae & Fernando · exiting SEV' : missionPhase === 'crew-approach' ? 'Crew final approach · SEV parked' : missionPhase === 'rover-approach' ? 'Rover deployed · 3 crew hold at SEV' : missionPhase === 'science' ? 'Field science stop · SEV parked, crew outside' : missionPhase}</p>
         <div className="flex items-baseline justify-between font-mono text-sm tabular-nums text-neutral-200">
           <span>
             {distanceKm.toFixed(3)}

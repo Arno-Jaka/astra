@@ -167,6 +167,22 @@ profile. Replies are spoken with a neural voice.
   (or a robot-only task: high physical risk, strict contamination limits,
   repetitive work) parks the SEV at the last safe point and **auto-deploys the
   rover** to the target. Walking and jumping follow Mars gravity (3.71 m/s²).
+- **Randomized field-science detours** — on a crew-safe SEV traverse, ASTRA
+  scatters up to ten deterministic, off-route science sites a few metres to
+  either side of the route, clustered near mapped Mars regions and spaced along
+  the traverse. While driving, a prompt offers a detour when an unvisited
+  crew-safe site is ~260 m ahead; ignoring it dismisses the prompt until the SEV
+  passes. Accepting parks the SEV just off-route, three astronauts step out, walk
+  to evenly spaced points around the target facing inward, and loop the rigs'
+  `Duck` crouch as the best available working pose. Four illustrative
+  experiments are simulated from a per-site seed: a RAD dose tracker, an
+  isotope-ratio sampler, a LIBS laser composition measurement and a MOXIE-style
+  O₂ reactor. The site switches to an isometric view; clicking another science
+  marker within 160 m moves the crew on foot to that target, while **Enter
+  vehicle** stays disabled until the current experiment finishes. Activity,
+  data and location are logged, with a CSV download; results are deterministic
+  per site and explicitly illustrative, not measured NASA data. Unsafe regional
+  screening suppresses detours and picks; weather remains visual-only.
 - **Layers** — a layer panel toggles NASA base imagery (MOLA hillshade or
   Viking MDIM 2.1) and a **slope-hazard overlay** (green→red at
   5/10/15/25°) computed server-side from the MOLA DEM, plus the 21 gazetteer
@@ -221,6 +237,7 @@ Crash checks: `cd frontend && node scripts/verify-crash-physics.mjs`.
 Crew/vehicle checks: `cd frontend && node scripts/verify-crew-mission.mjs` and
 `node scripts/verify-task-assignment.mjs`.
 Weather checks: `cd frontend && node scripts/verify-weather.mjs`.
+Science checks: `cd frontend && node scripts/verify-science.mjs`.
 
 ### Crew display and failure training
 

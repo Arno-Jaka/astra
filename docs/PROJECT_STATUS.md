@@ -46,6 +46,15 @@ Updated 13 November 2026.
   pace). Each astronaut faces the direction of travel with an independent stride,
   hop timing and uneven-but-bounded spacing, and steps out with the jump and
   jump-land clips.
+- Randomized field-science detours on crew-safe SEV traverses: up to ten
+  deterministic sites scattered 9–29 m off-route and clustered around mapped
+  regions; a ~260 m approach prompt; off-route SEV parking; three astronauts
+  disembarking and surrounding the target; four illustrative experiments (RAD,
+  isotope sampler, LIBS, MOXIE) with deterministic per-site results; an isometric
+  field view; on-foot moves to nearby targets within 160 m; gated boarding until
+  work finishes; activity/data/location logging with CSV export; and unsafe-site
+  suppression by regional screening. No dedicated working animation exists, so
+  the rigs' authored `Duck` crouch is used as the working pose.
 - Regional weather & radiation screening: 21 mapped regions classified
   **safe / caution / unsafe** from a derived weather + radiation estimate, with
   scenic character and science value shown alongside. A globe overlay colours
@@ -113,6 +122,6 @@ training remain labeled simulations.
    calculation; validated suit/physiology/consumable models remain future work.
    SEV parking is a regional terrain candidate, not a certified safe/landing or
    contamination-cleared point, there is no local obstacle avoidance on the final
-   approach, and georeferenced science experiment areas of interest are not yet
-   defined.
+   approach, and the field-science sites are deterministic illustrative clusters,
+   not georeferenced instrument targets or measured experiment locations.
 5. Expand device/accessibility testing and production failure/recovery coverage.

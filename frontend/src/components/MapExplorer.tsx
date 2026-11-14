@@ -6,6 +6,7 @@ import { MARS } from '../map/trek'
 import { useAppStore } from '../store/appStore'
 import { ENVIRONMENT_ENTITY_PREFIX } from '../store/environmentMeta'
 import { WEATHER_ENTITY_PREFIX } from '../store/weatherEngine'
+import { SCIENCE_ENTITY_PREFIX, scienceSiteIdOf } from '../map/scienceFx'
 import { useMissionStore } from '../store/missionStore'
 import { dispatchLocalCommand, onCommand } from '../ws/commandChannel'
 
@@ -88,11 +89,11 @@ export default function MapExplorer({ viewer }: { viewer: Viewer }) {
       return { lon: CesiumMath.toDegrees(p.longitude), lat: CesiumMath.toDegrees(p.latitude) }
     }
     const blocked = () => moving || useAppStore.getState().routePhase === 'simulating'
-    /** Skip screening-overlay and weather-FX entities so they never steal a site hover or a map click. */
+    /** Skip screening-overlay, weather-FX and science-marker entities so they never steal a site hover or a map click. */
     const pickVisible = (position: Cartesian2) => {
       for (const picked of viewer.scene.drillPick(position)) {
         const id = picked?.id
-        if (id instanceof Entity && (id.id.startsWith(ENVIRONMENT_ENTITY_PREFIX) || id.id.startsWith(WEATHER_ENTITY_PREFIX))) continue
+        if (id instanceof Entity && (id.id.startsWith(ENVIRONMENT_ENTITY_PREFIX) || id.id.startsWith(WEATHER_ENTITY_PREFIX) || id.id.startsWith(SCIENCE_ENTITY_PREFIX))) continue
         if (id) return id
       }
       return undefined
@@ -212,6 +213,9 @@ export default function MapExplorer({ viewer }: { viewer: Viewer }) {
       await select(current.current.end, 'end')
     })
     handler.setInputAction(({ position }: { position: Cartesian2 }) => {
+      // A science marker has its own click behaviour (detour / move crew), so
+      // it must not also pick a new route point underneath the marker.
+      if (viewer.scene.drillPick(position).some(picked => scienceSiteIdOf(picked?.id))) return
       const point = pick(position)
       if (point) void select(point)
     }, ScreenSpaceEventType.LEFT_CLICK)

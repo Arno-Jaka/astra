@@ -13,7 +13,7 @@ export type DriveCrash = {
 export type DriveTelemetry = {
   vehicle: VehicleKind
   completion: 'idle' | 'arrived' | 'stopped' | 'risk-hold'
-  missionPhase: 'aboard' | 'disembarking' | 'crew-approach' | 'rover-approach' | 'complete' | 'hold'
+  missionPhase: 'aboard' | 'disembarking' | 'crew-approach' | 'rover-approach' | 'science' | 'complete' | 'hold'
   crewMessage: string
   distanceKm: number
   totalKm: number

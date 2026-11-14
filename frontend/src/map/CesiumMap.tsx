@@ -43,6 +43,8 @@ import DriveHud from '../components/DriveHud'
 import MapExplorer from '../components/MapExplorer'
 import RoverCameraWindow, { type RoverViewPose } from '../components/RoverCameraWindow'
 import LayerPanel from '../components/LayerPanel'
+import SciencePanel from '../components/SciencePanel'
+import ScienceToast from '../components/ScienceToast'
 import {
   briefingSchema,
   conditionsSchema,
@@ -68,6 +70,12 @@ import { assignVehicle } from './taskAssignment'
 import { vehicleModel } from './vehicleModels'
 import { planCrewMission } from './crewMission'
 import { createSurfaceCrew, type SurfaceCrew } from './surfaceCrew'
+import { createScienceCrew, type ScienceCrew } from './scienceCrew'
+import { planScienceSites, offsetRouteSample, distanceMeters, siteLabel, SCIENCE_NEARBY_M, type ScienceSite } from './scienceSites'
+import { SCIENCE_META } from './scienceExperiments'
+import { destroyScienceFx, scienceSiteIdOf, syncScienceFx } from './scienceFx'
+import { useScienceStore } from '../store/scienceStore'
+import { useEnvironmentStore } from '../store/environmentStore'
 import { advanceDrive, arrivalSpeedLimit } from './driveMotion'
 import { advanceCrash, bodySupport, terrainSupport, topplesAtCliff, type CrashBody } from './crashPhysics'
 import { createDriveSurface } from './driveSurface'
@@ -549,7 +557,27 @@ export default function CesiumMap() {
     let scoutModel: Model | null = null
     let activeVehicleModel = vehicleModel('rover')
     let surfaceCrew: SurfaceCrew | null = null
+    let scienceCrew: ScienceCrew | null = null
+    /** Field stop currently active (vehicle parked, crew outside). */
+    let scienceStop: { site: ScienceSite; finalT: number; startedAt: string } | null = null
+    /** Site accepted for a vehicle detour; consumed when the SEV arrives. */
+    let scienceTargetSiteId: string | null = null
+    let scienceFramePrev = 0
+    let scienceCameraHeading = 0
+    let lastSciencePromptCheck = 0
+    /** Site the user explicitly declined; not suggested again unless passed. */
+    let mutedPromptId: string | null = null
+    let lastPromptId: string | null = null
+    let promptCooldownUntil = 0
+    let lastWorkPush = 0
     let parkedSev: Model | null = null
+
+    /** Drop the field crew and its dev-only debug handle together. */
+    const destroyScienceCrew = () => {
+      scienceCrew?.destroy()
+      scienceCrew = null
+      if (import.meta.env.DEV) (globalThis as unknown as Record<string, unknown>).__astraScienceCrew = null
+    }
     let scoutFrame = 0
     let scoutToken = 0
     let scoutGrounded = false
@@ -599,6 +627,13 @@ export default function CesiumMap() {
         if (parkedSev && !parkedSev.isDestroyed()) viewer.scene.primitives.remove(parkedSev)
         parkedSev = null
       }
+      // A new launch always ends any field stop but keeps the route's science
+      // markers and the session log (only clearRoute removes those).
+      destroyScienceCrew()
+      scienceStop = null
+      scienceTargetSiteId = null
+      scienceFramePrev = 0
+      useScienceStore.getState().endScience()
       scanSeconds = 0
       roverViewRef.current = null
       weatherFx.clearAnchor()
@@ -1173,6 +1208,8 @@ export default function CesiumMap() {
 
     const clearRoute = () => {
       removeScout()
+      destroyScienceFx(viewer)
+      useScienceStore.getState().reset()
       for (const id of [
         'astra-route',
         'astra-route-start',
@@ -1195,9 +1232,45 @@ export default function CesiumMap() {
       }
     }
 
+    /**
+     * Rebuild the deterministic off-route science sites for the current route.
+     * Sites are offered only on a crew-safe SEV traverse: a robotic rover
+     * deployment or a hazardous comparison gets no field stops.
+     */
+    const refreshScienceSites = () => {
+      const { route, routeChoice } = useAppStore.getState()
+      if (!route || routeChoice !== 'safe') {
+        destroyScienceFx(viewer)
+        useScienceStore.getState().loadSites([])
+        return
+      }
+      const traverse = selectTraverse(route, 'safe')
+      if (!traverse) {
+        destroyScienceFx(viewer)
+        useScienceStore.getState().loadSites([])
+        return
+      }
+      const assignment = assignVehicle(route, route.slope_limit_deg, route.crew_estimate?.profile)
+      const plan = planCrewMission(route, route.slope_limit_deg, assignment.vehicle)
+      if (assignment.vehicle !== 'sev' || !plan.available) {
+        destroyScienceFx(viewer)
+        useScienceStore.getState().loadSites([])
+        return
+      }
+      const totalM = traverse.distance_km * 1000
+      const sites = planScienceSites(traverse, useEnvironmentStore.getState().zones, plan.stagingT * totalM)
+      const science = useScienceStore.getState()
+      science.loadSites(sites)
+      syncScienceFx(viewer, sites, science.activeSiteId, new Set(science.logs.map(entry => entry.siteId)))
+    }
+
     const startScout = async (route: RouteData, deploymentT?: number) => {
       const deploying = deploymentT !== undefined
       removeScout(deploying)
+      mutedPromptId = null
+      lastPromptId = null
+      promptCooldownUntil = 0
+      lastSciencePromptCheck = 0
       scoutGrounded = true
       useDriveStore.getState().start()
       setPreviewMarkerVisible(false)
@@ -1222,7 +1295,11 @@ export default function CesiumMap() {
       const cameraScale = activeVehicleModel.cameraScale
       useDriveStore.getState().update({ vehicle, completion: 'idle', missionPhase: deploying ? 'rover-approach' : 'aboard', crewMessage: plan.reason })
       const initialT = deploymentT ?? 0
-      const destinationT = deploying ? 1 : plan.stagingT
+      const finalDestinationT = deploying ? 1 : plan.stagingT
+      let destinationT = finalDestinationT
+      /** Signed lateral parking offset for a science detour (m). */
+      let destinationSideM = 0
+      let lateralM = 0
       const startSample = sampleRoute(traverse, initialT)
       roverViewRef.current = { position: Cartesian3.fromDegrees(startSample.lon, startSample.lat, groundAt(startSample, null), MARS), heading: startSample.bearing, terrainProvider }
       useDriveStore.getState().update({ totalKm: traverse.distance_km })
@@ -1527,6 +1604,10 @@ export default function CesiumMap() {
       /** Shared cleanup for both natural completion and an Esc abort. */
       const endDrive = (completion: 'arrived' | 'stopped' | 'risk-hold' = 'stopped') => {
         surfaceCrew?.stop()
+        destroyScienceCrew()
+        scienceStop = null
+        scienceTargetSiteId = null
+        useScienceStore.getState().endScience()
         wheelDust?.stop()
         scoutFrame = 0
         chaseActive = false
@@ -1542,6 +1623,182 @@ export default function CesiumMap() {
         store.setPreviewT(lastT)
         store.setRoutePhase('preview')
         setPreviewMarkerVisible(true)
+      }
+
+      /**
+       * Leave the field stop: hide the crew in the SEV, restore the real
+       * destination and drive back onto the route.
+       */
+      const resumeRoute = () => {
+        if (token !== scoutToken) return
+        destroyScienceCrew()
+        scienceStop = null
+        scienceTargetSiteId = null
+        useScienceStore.getState().endScience()
+        destinationT = finalDestinationT
+        destinationSideM = 0
+        orbit.yaw = 0
+        orbit.pitch = ORBIT.defaultPitch
+        orbit.distance = ORBIT.defaultDistance * cameraScale
+        useDriveStore.getState().update({ missionPhase: 'aboard', loading: false, speedMps: 0, arriving: false, braking: false })
+        useScienceStore.getState().toast('success', 'Crew aboard · resuming the route')
+        chaseActive = true
+        const sample = sampleRoute(traverse, lastT)
+        const driveSample = Math.abs(lateralM) > 0.005 ? offsetRouteSample(sample, lateralM) : sample
+        const ground = groundAt(driveSample, corridor)
+        const anchor = Cartesian3.fromDegrees(driveSample.lon, driveSample.lat, ground, MARS)
+        let started = false
+        const begin = () => {
+          if (started || token !== scoutToken) return
+          started = true
+          lastFrame = performance.now()
+          scoutFrame = requestAnimationFrame(step)
+        }
+        viewer.camera.flyTo({
+          ...orbitPose(anchor, aimPoint(anchor, bearing), bearing, orbit, ground),
+          duration: 0.9,
+          complete: begin,
+          cancel: begin,
+        })
+      }
+
+      /** Park at an accepted science site, disembark and begin field work. */
+      const beginScienceStop = async (site: ScienceSite) => {
+        if (token !== scoutToken) return
+        const routeSample = sampleRoute(traverse, Math.min(1, site.alongKm / totalKm))
+        // The SEV is parked off-route; the crew must step out from the vehicle,
+        // not from the route centreline.
+        const parkSample = Math.abs(lateralM) > 0.005 ? offsetRouteSample(routeSample, lateralM) : routeSample
+        velocityMps = 0
+        wheelDust?.stop()
+        scienceTargetSiteId = null
+        scienceStop = { site, finalT: finalDestinationT, startedAt: new Date().toISOString() }
+        useDriveStore.getState().update({ missionPhase: 'science', loading: true, speedMps: 0, arriving: false, braking: false })
+        useScienceStore.getState().beginSite(site.id)
+        useScienceStore.getState().toast('info', `Crew disembarking · ${siteLabel(site)}`)
+        const siteGround = groundAt({ ...parkSample, lon: site.lon, lat: site.lat }, corridor)
+        const siteAnchor = Cartesian3.fromDegrees(site.lon, site.lat, siteGround, MARS)
+        const siteAim = Cartesian3.fromDegrees(site.lon, site.lat, siteGround + 0.9, MARS)
+        orbit.yaw = 0
+        orbit.pitch = 0.72
+        orbit.distance = Math.max(ORBIT.minDistance * cameraScale, 20)
+        scienceCameraHeading = parkSample.bearing
+        try {
+          const crew = await createScienceCrew(viewer, sample => groundAt(sample, corridor), () => token !== scoutToken)
+          if (token !== scoutToken || !crew) { crew?.destroy(); return }
+          scienceCrew = crew
+          if (import.meta.env.DEV) (globalThis as unknown as Record<string, unknown>).__astraScienceCrew = crew
+          crew.setWeather(weatherFx.rollForHeading(bearing), weatherFx.tint)
+          crew.spawn(parkSample, site, SCIENCE_META[site.kind].durationS)
+          useDriveStore.getState().update({ loading: false })
+          chaseActive = false
+          viewer.camera.flyTo({
+            ...orbitPose(siteAnchor, siteAim, scienceCameraHeading, orbit, siteGround),
+            duration: 1.1,
+          })
+          scienceFramePrev = performance.now()
+          lastWorkPush = 0
+          let scienceCameraSettleAt = performance.now() + 1100
+          let viewSiteId = site.id
+
+          const scienceStep = (now: number) => {
+            if (token !== scoutToken || !scienceCrew || !scienceStop) return
+            const controls = useDriveStore.getState()
+            if (controls.stopRequested) {
+              destroyScienceCrew()
+              scienceStop = null
+              scienceTargetSiteId = null
+              useScienceStore.getState().endScience()
+              endDrive()
+              return
+            }
+            const dt = document.hidden || controls.paused ? 0 : Math.min(0.1, Math.max(0.001, (now - scienceFramePrev) / 1000))
+            scienceFramePrev = now
+            const science = useScienceStore.getState()
+            const currentSite = science.sites.find(candidate => candidate.id === science.activeSiteId) ?? scienceStop.site
+
+            // The user can send the crew to another nearby target after the
+            // current spot is finished. The SEV stays parked.
+            if (science.moveRequestId) {
+              const requestId = science.moveRequestId
+              science.consumeMove()
+              const next = science.sites.find(candidate => candidate.id === requestId)
+              if (next && science.phase === 'done' && distanceMeters(currentSite, next) <= SCIENCE_NEARBY_M) {
+                scienceCrew.travelTo(next, SCIENCE_META[next.kind].durationS)
+                scienceStop.startedAt = new Date().toISOString()
+                scienceCameraHeading = sampleRoute(traverse, Math.min(1, next.alongKm / totalKm)).bearing
+                useScienceStore.getState().travelToSite(next.id)
+                useScienceStore.getState().toast('info', `Crew moving to ${siteLabel(next)}`)
+              } else {
+                useScienceStore.getState().toast('warn', `Only science sites within ${SCIENCE_NEARBY_M} m can be reached on foot.`)
+              }
+            }
+
+            if (useScienceStore.getState().phase === 'boarding') scienceCrew.board()
+            scienceCrew.setWeather(weatherFx.rollForHeading(bearing), weatherFx.tint)
+            scienceCrew.update(dt)
+
+            const active = useScienceStore.getState()
+            const viewSite = active.sites.find(candidate => candidate.id === active.activeSiteId) ?? scienceStop.site
+            const viewSample = sampleRoute(traverse, Math.min(1, viewSite.alongKm / totalKm))
+            const viewGround = groundAt({ ...viewSample, lon: viewSite.lon, lat: viewSite.lat }, corridor)
+            const viewAnchor = Cartesian3.fromDegrees(viewSite.lon, viewSite.lat, viewGround, MARS)
+            const viewPose = orbitPose(
+              viewAnchor,
+              Cartesian3.fromDegrees(viewSite.lon, viewSite.lat, viewGround + 0.9, MARS),
+              scienceCameraHeading,
+              orbit,
+              viewGround,
+            )
+            if (viewSite.id !== viewSiteId) {
+              viewSiteId = viewSite.id
+              scienceCameraHeading = viewSample.bearing
+              viewer.camera.flyTo({ ...viewPose, duration: 0.8 })
+              scienceCameraSettleAt = now + 800
+            } else if (now > scienceCameraSettleAt) {
+              viewer.camera.setView(viewPose)
+            }
+
+            if (scienceCrew.mode === 'travel' && active.phase === 'disembarking') {
+              useScienceStore.getState().setPhase('travelling')
+            }
+            if (scienceCrew.mode === 'work' && active.phase === 'travelling') {
+              const duration = SCIENCE_META[viewSite.kind].durationS
+              useScienceStore.getState().setPhase('working')
+              useScienceStore.getState().setWork(0, duration)
+              useScienceStore.getState().toast('info', `Crew working · ${siteLabel(viewSite)} (${duration.toFixed(0)} s)`)
+            }
+            if (scienceCrew.mode === 'work' && active.phase === 'working' && now - lastWorkPush > 100) {
+              lastWorkPush = now
+              const duration = SCIENCE_META[viewSite.kind].durationS
+              useScienceStore.getState().setWork(scienceCrew.workProgress * duration, duration)
+            }
+            if (scienceCrew.mode === 'done' && active.phase === 'working') {
+              const duration = SCIENCE_META[viewSite.kind].durationS
+              useScienceStore.getState().finishSite(viewSite, scienceStop.startedAt, duration)
+              useScienceStore.getState().setWork(duration, duration)
+              const result = useScienceStore.getState().logs.at(-1)?.result
+              useScienceStore.getState().toast('success', `Experiment complete · ${viewSite.region}: ${result?.headline ?? 'data logged'}`)
+            }
+            if (scienceCrew.mode === 'off' && active.phase === 'boarding') {
+              resumeRoute()
+              return
+            }
+            scoutFrame = requestAnimationFrame(scienceStep)
+          }
+          scoutFrame = requestAnimationFrame(scienceStep)
+        } catch (error) {
+          if (token !== scoutToken) return
+          console.error('Science crew model loading failed', error)
+          useScienceStore.getState().toast('warn', 'Crew models could not load; resuming the route.')
+          scienceStop = null
+          useScienceStore.getState().endScience()
+          useDriveStore.getState().update({ loading: false, missionPhase: 'aboard' })
+          destinationT = finalDestinationT
+          destinationSideM = 0
+          lastFrame = performance.now()
+          scoutFrame = requestAnimationFrame(step)
+        }
       }
 
       const handoff = async () => {
@@ -1763,6 +2020,22 @@ export default function CesiumMap() {
         const controls = useDriveStore.getState()
         paused = controls.paused
         speedMult = controls.speedMult
+        // Consume an accepted science detour: retarget the SEV to the off-route
+        // parking point and remember the real destination for the resume.
+        const scienceNow = useScienceStore.getState()
+        if (scienceNow.detourSiteId) {
+          const site = scienceNow.sites.find(candidate => candidate.id === scienceNow.detourSiteId)
+          scienceNow.consumeDetour()
+          if (site && site.safety !== 'unsafe' && site.alongKm / totalKm > lastT + 0.0005) {
+            destinationT = Math.min(finalDestinationT, site.alongKm / totalKm)
+            destinationSideM = site.parkSideM
+            scienceTargetSiteId = site.id
+            useScienceStore.getState().toast('info', `Detour accepted · ${siteLabel(site)}`)
+          } else {
+            useScienceStore.getState().cancelDetour()
+            useScienceStore.getState().toast('warn', 'That science site is no longer ahead of the vehicle.')
+          }
+        }
         const timeScale = controls.travelMode === 'preview'
           ? Math.max(1, totalKm * 1000 / (90 * SCOUT_CRUISE_MPS))
           : 1
@@ -1777,7 +2050,8 @@ export default function CesiumMap() {
         ))
         const gradeFactor = 1 / (1 + Math.max(Math.abs(ahead.gradeDeg), Math.abs(localGrade)) / 8)
         const turn = Math.abs(wrapPi(ahead.bearing - bearing))
-        const remainingM = Math.max(0, destinationT * totalKm * 1000 - distanceM)
+        const alongRemainingM = Math.max(0, destinationT * totalKm * 1000 - distanceM)
+        const remainingM = alongRemainingM + Math.abs(destinationSideM - lateralM)
         const targetSpeed = wantsHalt ? 0 : Math.min(
           SCOUT_CRUISE_MPS * gradeFactor / (1 + turn * 3),
           arrivalSpeedLimit(remainingM, timeScale * speedMult, velocityMps, wallDt),
@@ -1785,13 +2059,64 @@ export default function CesiumMap() {
         const motion = advanceDrive(velocityMps, targetSpeed, wallDt)
         velocityMps = motion.speed
         distanceM = Math.min(destinationT * totalKm * 1000, distanceM + motion.distance * timeScale * speedMult)
-        if (!wantsHalt && remainingM < 0.01) distanceM = destinationT * totalKm * 1000
+        if (!wantsHalt && alongRemainingM < 0.01) distanceM = destinationT * totalKm * 1000
         const braking = wantsHalt && velocityMps > 0
         if (braking !== controls.braking) useDriveStore.getState().update({ braking })
         const t = totalKm > 0 ? distanceM / (totalKm * 1000) : 1
         lastT = t
         const sample = sampleRoute(traverse, t)
-        const ground = groundAt(sample, corridor)
+        // Sidle off the route into the parking point as the SEV nears a science
+        // detour; back on the route, the same spring returns it to the centre.
+        const targetAlongM = destinationT * totalKm * 1000
+        if (Math.abs(destinationSideM) > 0.01) {
+          const desired = destinationSideM * Math.max(0, Math.min(1, (distanceM - (targetAlongM - 45)) / 45))
+          lateralM += (desired - lateralM) * (1 - Math.exp(-3 * dt))
+          if (Math.abs(lateralM) < 0.01) lateralM = 0
+        } else if (lateralM !== 0) {
+          lateralM *= Math.exp(-2.5 * dt)
+          if (Math.abs(lateralM) < 0.01) lateralM = 0
+        }
+        const driveSample = Math.abs(lateralM) > 0.005 ? offsetRouteSample(sample, lateralM) : sample
+        const ground = groundAt(driveSample, corridor)
+        // Suggest a detour while the vehicle is still approaching an unvisited,
+        // crew-safe site. It disappears by itself once the site is passed, and
+        // an explicit "Keep driving" mutes that site until it is behind us.
+        // Preview compresses a whole traverse into ~90 s, so a fixed 260 m
+        // window can slide past in a fraction of a second. Scale the window
+        // with the effective ground speed to keep a usable reaction time; the
+        // 260 m floor preserves the short-lead behaviour in real time.
+        const effectiveSpeedMps = SCOUT_CRUISE_MPS * timeScale * speedMult
+        const promptLeadM = Math.max(260, effectiveSpeedMps * 7)
+        if (now - lastSciencePromptCheck > 250) {
+          lastSciencePromptCheck = now
+          const science = useScienceStore.getState()
+          if (science.phase === 'off' && !scienceTargetSiteId) {
+            const logged = new Set(science.logs.map(entry => entry.siteId))
+            if (science.promptSiteId !== lastPromptId) {
+              if (!science.promptSiteId && lastPromptId) {
+                const dismissed = science.sites.find(candidate => candidate.id === lastPromptId)
+                if (dismissed && dismissed.alongKm * 1000 > distanceM + 25 && !logged.has(dismissed.id)) {
+                  mutedPromptId = dismissed.id
+                  promptCooldownUntil = now + 6000
+                }
+              }
+              lastPromptId = science.promptSiteId
+            }
+            if (science.promptSiteId) {
+              const prompted = science.sites.find(candidate => candidate.id === science.promptSiteId)
+              const thereM = prompted ? prompted.alongKm * 1000 : 0
+              if (!prompted || distanceM > thereM + 50 || thereM - distanceM > promptLeadM) science.dismissPrompt()
+            } else if (now >= promptCooldownUntil) {
+              const next = science.sites.find(candidate =>
+                candidate.id !== mutedPromptId &&
+                candidate.safety !== 'unsafe' &&
+                !logged.has(candidate.id) &&
+                candidate.alongKm * 1000 > distanceM + 25 &&
+                candidate.alongKm * 1000 - distanceM <= promptLeadM)
+              if (next) science.prompt(next.id)
+            }
+          }
+        }
         if (controls.jetRequested && vehicle === 'rover') {
           beginCrash('jet', sample)
           scoutFrame = requestAnimationFrame(step)
@@ -1827,8 +2152,8 @@ export default function CesiumMap() {
           (tiltRaw - tiltSmooth) * (1 - Math.exp(-SUSPENSION.tiltSmoothPerS * dt))
 
         const position = Cartesian3.fromDegrees(
-          sample.lon,
-          sample.lat,
+          driveSample.lon,
+          driveSample.lat,
           rideHeight,
           MARS,
         )
@@ -1836,10 +2161,10 @@ export default function CesiumMap() {
         // around the circle (wrapPi; the old inline modulo expression
         // returned -pi for a zero delta and spun the heading backward).
         bearing +=
-          wrapPi(sample.bearing - bearing) * (1 - Math.exp(-CHASE.headingPerS * dt))
+          wrapPi(driveSample.bearing - bearing) * (1 - Math.exp(-CHASE.headingPerS * dt))
         up = Cartesian3.lerp(
           up,
-          terrainNormalAt(sample.lon, sample.lat),
+          terrainNormalAt(driveSample.lon, driveSample.lat),
           1 - Math.exp(-CHASE.normalPerS * dt),
           new Cartesian3(),
         )
@@ -1866,7 +2191,7 @@ export default function CesiumMap() {
             rideHeight += lift
             bodyHeight = Math.max(bodyHeight, rideHeight)
             verticalSpeed = Math.max(0, verticalSpeed)
-            Cartesian3.fromDegrees(sample.lon, sample.lat, rideHeight, MARS, position)
+            Cartesian3.fromDegrees(driveSample.lon, driveSample.lat, rideHeight, MARS, position)
             matrix = roverMatrix(position, bearing, up, tiltSmooth, clearance, weatherRoll)
           }
           scoutModel.modelMatrix = matrix
@@ -1886,7 +2211,7 @@ export default function CesiumMap() {
               (ORBIT.defaultPitch - orbit.pitch) *
               (1 - Math.exp(-ORBIT.recenterPerS * 0.6 * dt))
           }
-          updateChaseCamera(sample, ground, dt)
+          updateChaseCamera(driveSample, ground, dt)
         }
         // Throttled telemetry: the HUD, route-panel readouts, scrubber, and
         // elevation-chart cursor all track the drive live. Passing a
@@ -1952,11 +2277,21 @@ export default function CesiumMap() {
         // Arrival is judged on distance, not on the recomputed fraction:
         // destinationT * totalKm * 1000 can fail to round-trip through
         // distanceM / (totalKm * 1000), leaving `t < destinationT` true forever.
-        if (remainingM > 0.01 || wantsHalt) {
+        // A detour also has to finish sidling into its off-route parking point.
+        const arrived = alongRemainingM <= 0.01 && Math.abs(destinationSideM - lateralM) <= 0.75
+        if (!arrived || wantsHalt) {
           scoutFrame = requestAnimationFrame(step)
+        } else if (scienceTargetSiteId && !deploying) {
+          const site = useScienceStore.getState().sites.find(candidate => candidate.id === scienceTargetSiteId)
+          if (site) void beginScienceStop(site)
+          else {
+            scienceTargetSiteId = null
+            void handoff()
+          }
+        } else if (deploying) {
+          endDrive('arrived')
         } else {
-          if (deploying) endDrive('arrived')
-          else void handoff()
+          void handoff()
         }
       }
       scoutFrame = requestAnimationFrame(step)
@@ -2242,6 +2577,7 @@ export default function CesiumMap() {
         subscribedRoute = route
         subscribedChoice = state.routeChoice
         removeScout()
+        refreshScienceSites()
       }
       if (!route) subscribedPhase = 'idle'
       if (!route || viewer.isDestroyed()) return
@@ -2278,6 +2614,70 @@ export default function CesiumMap() {
       }
     })
 
+    // Science markers are revealed only in close route/vehicle views, and
+    // restyle when a site becomes active or is logged as done.
+    let scienceMarkerSignature = ''
+    const unsubscribeScience = useScienceStore.subscribe((state) => {
+      const signature = `${state.sites.map(site => site.id).join('|')}|${state.activeSiteId}|${state.logs.length}`
+      if (signature === scienceMarkerSignature) return
+      scienceMarkerSignature = signature
+      if (viewer.isDestroyed()) return
+      syncScienceFx(viewer, state.sites, state.activeSiteId, new Set(state.logs.map(entry => entry.siteId)))
+    })
+
+    // Regional screening zones load asynchronously; regenerate the sites when
+    // they arrive so clusters anchor to named Mars regions.
+    let subscribedZoneCount = useEnvironmentStore.getState().zones.length
+    const unsubscribeEnvironment = useEnvironmentStore.subscribe((state) => {
+      if (state.zones.length === subscribedZoneCount) return
+      subscribedZoneCount = state.zones.length
+      // Never reshuffle sites under an active drive or field stop.
+      if (useDriveStore.getState().active) return
+      refreshScienceSites()
+    })
+
+    // A science marker click accepts a detour while driving, or sends the crew
+    // to a nearby target after the current experiment is finished.
+    const scienceHandler = new ScreenSpaceEventHandler(viewer.canvas)
+    scienceHandler.setInputAction(({ position }: { position: Cartesian2 }) => {
+      if (viewer.isDestroyed()) return
+      let siteId: string | null = null
+      for (const picked of viewer.scene.drillPick(position)) {
+        siteId = scienceSiteIdOf(picked?.id)
+        if (siteId) break
+      }
+      if (!siteId) return
+      const science = useScienceStore.getState()
+      const site = science.sites.find(candidate => candidate.id === siteId)
+      if (!site) return
+      if (site.safety === 'unsafe') {
+        science.toast('warn', `${siteLabel(site)} is screened unsafe for crew operations.`)
+        return
+      }
+      if (science.phase === 'done') {
+        const active = science.sites.find(candidate => candidate.id === science.activeSiteId)
+        if (active && active.id !== site.id) {
+          if (science.logs.some(entry => entry.siteId === site.id)) {
+            science.toast('info', `${siteLabel(site)} is already logged.`)
+          } else if (distanceMeters(active, site) <= SCIENCE_NEARBY_M) science.requestMove(site.id)
+          else science.toast('warn', `Only science sites within ${SCIENCE_NEARBY_M} m can be reached on foot.`)
+        }
+        return
+      }
+      if (science.phase !== 'off') {
+        science.toast('info', 'Crew are busy at the current field stop.')
+        return
+      }
+      if (!useDriveStore.getState().active) {
+        science.toast('info', 'Run the traverse to detour to a science site.')
+        return
+      }
+      science.acceptDetour(site.id)
+    }, ScreenSpaceEventType.LEFT_CLICK)
+
+    // A route may already be selected when this component mounts.
+    refreshScienceSites()
+
     if (import.meta.env.DEV) {
       ;(globalThis as unknown as Record<string, unknown>).__astraViewer =
         viewer
@@ -2302,7 +2702,10 @@ export default function CesiumMap() {
       removeGrounding()
       unsubscribeDrive()
       unsubscribeStore()
+      unsubscribeScience()
+      unsubscribeEnvironment()
       unsubscribeLayers()
+      scienceHandler.destroy()
       unregister()
       unregisterConditions()
       unregisterBriefing()
@@ -2330,6 +2733,8 @@ export default function CesiumMap() {
       <div ref={containerRef} className="h-full w-full" />
       <LayerPanel terrainStatus={terrainStatus} onRetryTerrain={() => retryTerrainRef.current()} />
       <DriveHud />
+      <SciencePanel />
+      <ScienceToast />
       {mapViewer && !mapViewer.isDestroyed() && <MapExplorer viewer={mapViewer} />}
       {mapViewer && !mapViewer.isDestroyed() && <EnvironmentOverlay viewer={mapViewer} />}
       <RoverCameraWindow poseRef={roverViewRef} />
