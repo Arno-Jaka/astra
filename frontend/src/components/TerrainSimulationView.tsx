@@ -27,21 +27,21 @@ function wrapLonDelta(lon: number, ref: number) {
   return d
 }
 
-function routeBounds(route: { coordinates: [number, number][]; distance_km: number } | null): Bounds | null {
-  const coords = route?.coordinates ?? []
+function routeBoundsFromCoords(all: [number, number][][], distanceKm: number): Bounds | null {
+  const coords = all.flat()
   if (coords.length < 2) return null
-  const lons = coords.map((c) => c[0])
+  const refLon = coords[0][0]
+  const unwrapped = coords.map((c) => refLon + wrapLonDelta(c[0], refLon))
   const lats = coords.map((c) => c[1])
-  const refLon = lons[0]
-  const unwrapped = lons.map((l) => refLon + wrapLonDelta(l, refLon))
   const west = Math.min(...unwrapped)
   const east = Math.max(...unwrapped)
   const south = Math.min(...lats)
   const north = Math.max(...lats)
   const spanLon = Math.max(east - west, 0.02)
   const spanLat = Math.max(north - south, 0.02)
-  const padLon = Math.max(spanLon * 0.7, 0.05, (route?.distance_km ?? 1) * 0.015)
-  const padLat = Math.max(spanLat * 0.7, 0.05, (route?.distance_km ?? 1) * 0.015)
+  // tighter fit around NASA route data, with enough margin for prominent site context
+  const padLon = Math.max(spanLon * 0.45, 0.04, distanceKm * 0.01)
+  const padLat = Math.max(spanLat * 0.45, 0.04, distanceKm * 0.01)
   return {
     west: clamp(west - padLon, -360, 360),
     south: clamp(south - padLat, -89.5, 89.5),
@@ -162,7 +162,13 @@ export default function TerrainSimulationView() {
     return routeChoice === 'hazardous' && route.hazardous ? route.hazardous : route
   }, [route, routeChoice])
 
-  const bounds = useMemo(() => routeBounds(traverse), [traverse])
+  const bounds = useMemo(() => {
+    if (!route) return null
+    const sets: [number, number][][] = [route.coordinates as [number, number][]]
+    if (route.hazardous?.coordinates?.length) sets.push(route.hazardous.coordinates as [number, number][])
+    const dist = Math.max(route.distance_km ?? 0, route.hazardous?.distance_km ?? 0)
+    return routeBoundsFromCoords(sets, dist || 1)
+  }, [route])
   const siteKey = (route?.end || route?.start || 'mars').toLowerCase()
 
   const [dem, setDem] = useState<{ data: Float32Array; w: number; h: number; b: Bounds } | null>(null)
@@ -206,6 +212,7 @@ export default function TerrainSimulationView() {
     camera: THREE.PerspectiveCamera
     renderer: THREE.WebGLRenderer
     sampleTerrainY: (x: number, z: number) => number
+    terrainNormal: (x: number, z: number) => THREE.Vector3
     marker: THREE.Mesh
     vehicleObj: THREE.Group
     crewGroup: THREE.Group
@@ -277,7 +284,7 @@ export default function TerrainSimulationView() {
 
     const noise = createNoise2D(seed)
     const terrainSize = 320
-    const segments = 220
+    const segments = 256
     const geo = new THREE.PlaneGeometry(terrainSize, terrainSize, segments, segments)
     geo.rotateX(-Math.PI / 2)
     const posAttr = geo.attributes.position
@@ -342,6 +349,14 @@ export default function TerrainSimulationView() {
     scene.add(terrainMesh)
 
     const sampleTerrainY = (x: number, z: number) => getBaseHeight(x, z) + detailHeight(x, z, getBaseHeight(x, z))
+    const terrainNormal = (x: number, z: number) => {
+      const e = 0.6
+      const hL = sampleTerrainY(x - e, z), hR = sampleTerrainY(x + e, z)
+      const hD = sampleTerrainY(x, z - e), hU = sampleTerrainY(x, z + e)
+      // normal from height gradient (DEM-contour aligned contact)
+      const n = new THREE.Vector3(hL - hR, 2 * e, hD - hU)
+      return n.normalize()
+    }
 
     // rocks
     const createRockGeometry = (rockSeed: number) => {
@@ -387,31 +402,52 @@ export default function TerrainSimulationView() {
     const scienceGroup = new THREE.Group(); scene.add(scienceGroup)
     const crewGroup = new THREE.Group(); scene.add(crewGroup)
 
-    // routes & hazards
-    if (traverse && bounds) {
+    // routes & hazards (sync NASA route/hazard data; show both variants when present)
+    const drawRoute = (coords: [number, number][], color: number, opacity: number) => {
+      if (!bounds || coords.length < 2) return
       const pts: THREE.Vector3[] = []
-      for (const [lon, lat] of traverse.coordinates) {
+      for (const [lon, lat] of coords) {
         const p = lonLatToLocal(lon, lat, bounds)
         const y = sampleTerrainY(p.x, p.z)
-        pts.push(new THREE.Vector3(p.x, y + 0.25, p.z))
+        pts.push(new THREE.Vector3(p.x, y + 0.22, p.z))
       }
-      if (pts.length >= 2) {
-        const lineGeo = new THREE.BufferGeometry().setFromPoints(pts)
-        scene.add(new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.9 })))
-      }
-      const dangers = (traverse as any).dangers ?? []
-      for (const danger of dangers) {
+      const lineGeo = new THREE.BufferGeometry().setFromPoints(pts)
+      scene.add(new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color, transparent: true, opacity })))
+    }
+    const drawDangers = (dangers: any[], dim: boolean) => {
+      if (!bounds) return
+      for (const danger of dangers ?? []) {
         const p = lonLatToLocal(danger.lon, danger.lat, bounds)
         const y = sampleTerrainY(p.x, p.z)
         const color = dangerColor(danger.type)
-        const ring = new THREE.Mesh(new THREE.RingGeometry(0.6, 1.2, 24), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.7, side: THREE.DoubleSide }))
+        const ring = new THREE.Mesh(new THREE.RingGeometry(0.55, 1.15, 24), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: dim ? 0.35 : 0.7, side: THREE.DoubleSide }))
         ring.rotation.x = -Math.PI / 2
-        ring.position.set(p.x, y + 0.2, p.z)
+        ring.position.set(p.x, y + 0.18, p.z)
         hazardGroup.add(ring)
-        const cone = new THREE.Mesh(new THREE.ConeGeometry(0.35, 1.2, 12), new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.2 }))
-        cone.position.set(p.x, y + 0.8, p.z)
+        const cone = new THREE.Mesh(new THREE.ConeGeometry(0.3, 1.0, 12), new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: dim ? 0.08 : 0.22, transparent: dim, opacity: dim ? 0.55 : 1 }))
+        cone.position.set(p.x, y + 0.72, p.z)
         hazardGroup.add(cone)
       }
+    }
+    if (route && bounds) {
+      const activeIsHazardous = routeChoice === 'hazardous' && !!route.hazardous
+      // alternate route dimmed for context/sync
+      if (route.hazardous?.coordinates?.length) {
+        if (activeIsHazardous) {
+          drawRoute(route.coordinates as [number, number][], 0x38bdf8, 0.35)
+          drawDangers(route.dangers ?? [], true)
+        } else {
+          drawRoute(route.hazardous.coordinates as [number, number][], 0xf97316, 0.35)
+          drawDangers(route.hazardous.dangers ?? [], true)
+        }
+      }
+      // active traverse emphasized
+      const activeCoords = (activeIsHazardous ? route.hazardous!.coordinates : route.coordinates) as [number, number][]
+      drawRoute(activeCoords, activeIsHazardous ? 0xf97316 : 0x22d3ee, 0.95)
+      drawDangers((activeIsHazardous ? route.hazardous!.dangers : route.dangers) ?? [], false)
+    } else if (traverse && bounds) {
+      drawRoute(traverse.coordinates as [number, number][], 0x22d3ee, 0.9)
+      drawDangers((traverse as any).dangers ?? [], false)
     }
 
     const marker = new THREE.Mesh(new THREE.SphereGeometry(0.8, 18, 18), new THREE.MeshStandardMaterial({ color: 0x22d3ee, emissive: 0x0b4f5a, roughness: 0.4 }))
@@ -432,7 +468,7 @@ export default function TerrainSimulationView() {
       camera.lookAt(target)
     }
 
-    worldRef.current = { scene, camera, renderer, sampleTerrainY, marker, vehicleObj: vehicleGroup, crewGroup, crewMixers: [], scienceGroup, hazardGroup, target, spherical }
+    worldRef.current = { scene, camera, renderer, sampleTerrainY, terrainNormal, marker, vehicleObj: vehicleGroup, crewGroup, crewMixers: [], scienceGroup, hazardGroup, target, spherical }
 
     let isDragging = false, isPanning = false, prevX = 0, prevY = 0
     const onPointerDown = (e: PointerEvent) => { isDragging = true; isPanning = e.button === 2 || e.shiftKey; prevX = e.clientX; prevY = e.clientY }
@@ -484,21 +520,27 @@ export default function TerrainSimulationView() {
             const ahead = sampleRoute(st.traverse as any, Math.min(1, t + 0.002))
             const ap = lonLatToLocal(ahead.lon, ahead.lat, st.bounds)
             const ay = w.sampleTerrainY(ap.x, ap.z)
-            // surface-normal-ish tilt from local slope
-            const dx = ap.x - p.x, dz = ap.z - p.z, dy = ay - y
+            const dx = ap.x - p.x, dz = ap.z - p.z
             const len = Math.hypot(dx, dz) || 1
-            const pitch = Math.atan2(-dy, len)
+            const fwd = new THREE.Vector3(dx / len, (ay - y) / len, dz / len).normalize()
+            const up = w.terrainNormal(p.x, p.z)
+            const right = new THREE.Vector3().crossVectors(fwd, up).normalize()
+            const correctedFwd = new THREE.Vector3().crossVectors(up, right).normalize()
+            const basis = new THREE.Matrix4().makeBasis(right, up, correctedFwd)
+            const q = new THREE.Quaternion().setFromRotationMatrix(basis)
 
             w.marker.position.set(p.x, y + 1.1, p.z)
             w.marker.visible = true
-            w.vehicleObj.position.set(p.x, y + 0.35, p.z)
-            w.vehicleObj.rotation.set(pitch * 0.6, -s.bearing, 0)
+            // contact-aligned placement on DEM contour surface
+            w.vehicleObj.position.set(p.x, y + 0.28, p.z)
+            w.vehicleObj.quaternion.copy(q)
             w.vehicleObj.visible = st.missionPhase === 'aboard' || st.missionPhase === 'rover-approach' || st.missionPhase === 'complete' || st.missionPhase === 'hold' || st.active || t >= 0
 
-            // simple crash/jump visual cues
+            // simple crash/jump visual cues on DEM-aligned pose
             if (st.crash) {
-              w.vehicleObj.rotation.z += st.crash.type === 'rollover' ? 1.2 : 0
-              w.vehicleObj.position.y += st.crash.type === 'fall' ? -0.8 : st.crash.type === 'jet' ? 2.5 : 0
+              if (st.crash.type === 'rollover') w.vehicleObj.rotateZ(1.2)
+              if (st.crash.type === 'fall') w.vehicleObj.position.y -= 0.8
+              if (st.crash.type === 'jet') w.vehicleObj.position.y += 2.5
             }
 
             // crew placement on DEM surface (simplified state-driven behavior)
