@@ -663,10 +663,14 @@ export default function TerrainSimulationView() {
             const basis = new THREE.Matrix4().makeBasis(right, up, correctedFwd)
             const q = new THREE.Quaternion().setFromRotationMatrix(basis)
 
-            // hazard-aware visual cue on DEM route (aligned with route dangers)
+            // hazard-aware visual cue on DEM route (aligned with NASA-derived route dangers/spans)
             const dangers = (st.traverse as any).dangers ?? []
             let nearHazard = false
+            const distKm = s.distanceKm ?? 0
             for (const danger of dangers) {
+              const d0 = danger.distance_km ?? 0
+              const span = Math.max(danger.span_km ?? 0, 0.02)
+              if (distKm >= d0 - 0.03 && distKm <= d0 + span + 0.03) { nearHazard = true; break }
               const dp = lonLatToLocal(danger.lon, danger.lat, st.bounds)
               if (Math.hypot(dp.x - p.x, dp.z - p.z) < 2.2) { nearHazard = true; break }
             }
