@@ -679,6 +679,13 @@ export default function TerrainSimulationView() {
             // pulse hazard markers for visibility/sync
             const hp = 1 + Math.sin(clock.elapsedTime * 3) * 0.06
             w.hazardGroup.children.forEach((c, idx) => { if (idx % 2 === 0) c.scale.setScalar(hp) })
+            // pulse active/prompted science markers
+            for (const sm of scienceMeshesRef.current) {
+              const activeS = sm.id === st.activeSiteId
+              const promptedS = sm.id === useScienceStore.getState().promptSiteId
+              if (activeS || promptedS) sm.obj.scale.setScalar(1 + Math.sin(clock.elapsedTime * 4) * 0.08)
+              else sm.obj.scale.setScalar(1)
+            }
 
             // speed/braking/pausing response (visual dynamics on contour surface)
             const moving = st.active && !st.paused && st.speedMps > 0.02 && !st.crash
