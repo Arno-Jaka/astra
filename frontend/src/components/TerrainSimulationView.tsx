@@ -668,9 +668,9 @@ export default function TerrainSimulationView() {
             if (st.braking) w.vehicleObj.rotateX(0.04)
             w.vehicleObj.visible = st.missionPhase === 'aboard' || st.missionPhase === 'rover-approach' || st.missionPhase === 'complete' || st.missionPhase === 'hold' || st.active || t >= 0
 
-            // jump/jet/crash responses (animated, on DEM-aligned pose)
-            if (st.jumpRequested && jumpT < 0) { jumpT = 0; useDriveStore.setState({ jumpRequested: false }) }
-            if (st.jetRequested && jumpT < 0) { jetT = 0; useDriveStore.setState({ jetRequested: false }) }
+            // jump/jet/crash responses (animated on DEM-aligned pose; don't consume store flags so simulation stays in sync)
+            if (st.jumpRequested && jumpT < 0) { jumpT = 0 }
+            if (st.jetRequested && jetT < 0) { jetT = 0 }
             if (jumpT >= 0) { jumpT += dt; const j = Math.sin(Math.min(1, jumpT / 0.7) * Math.PI); w.vehicleObj.position.y += j * 1.1; if (jumpT > 0.7) jumpT = -1 }
             if (jetT >= 0) { jetT += dt; w.vehicleObj.position.y += Math.min(1, jetT / 0.8) * 2.2; if (jetT > 1.2) jetT = -1 }
             if (st.crash) {
