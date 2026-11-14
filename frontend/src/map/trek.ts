@@ -8,7 +8,8 @@ import {
 
 export const MARS = Ellipsoid.MARS
 
-const TREK_BASE = 'https://trek.nasa.gov/tiles/Mars/EQ'
+const TREK_BASE = (import.meta.env.VITE_TREK_TILE_BASE_URL as string | undefined)?.replace(/\/$/, '') || 'https://trek.nasa.gov/tiles/Mars/EQ'
+export const TREK_IMAGERY_BASE_URL = (import.meta.env.VITE_TREK_IMAGERY_BASE_URL as string | undefined) || 'https://trek.nasa.gov/mars/'
 
 export type TrekLayer = {
   id: string

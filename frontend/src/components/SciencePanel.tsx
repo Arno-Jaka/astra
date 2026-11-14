@@ -43,7 +43,7 @@ export default function SciencePanel() {
 
   if (!active) {
     return (
-      <FloatingPanel id="science" title="Field science log" width={310} initial={{ right: 16, top: 320 }}>
+      <FloatingPanel id="science" title="Field science log" width={310} initial={{ right: 460, top: 360 }}>
         <div className="p-3 text-xs text-neutral-300">
           <p className="text-[10px] uppercase tracking-widest text-cyan-200">{logs.length} experiment{logs.length === 1 ? '' : 's'} logged</p>
           <p className="mt-1 text-neutral-400">No active field stop. Detour prompts appear while driving the crew-safe traverse.</p>
@@ -61,7 +61,7 @@ export default function SciencePanel() {
   const busy = phase === 'approach' || phase === 'disembarking' || phase === 'travelling' || phase === 'working' || phase === 'boarding'
 
   return (
-    <FloatingPanel id="science" title="Field science" width={320} initial={{ right: 16, top: 320 }}>
+    <FloatingPanel id="science" title="Field science" width={320} initial={{ right: 460, top: 360 }}>
       <div className="space-y-3 p-3 text-xs text-neutral-300">
         <div>
           <p className="text-[10px] uppercase tracking-widest text-cyan-200">{meta.category}</p>

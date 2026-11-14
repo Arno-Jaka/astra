@@ -5,14 +5,16 @@ from pydantic import BaseModel
 from .agent import build_agent
 from .channel import channel
 from .commands import CommandError
+from .config import settings
 from .map_api import router as map_router
 
 app = FastAPI(title="ASTRA", version="0.1.0")
 app.include_router(map_router)
 
+cors_origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

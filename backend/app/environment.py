@@ -17,9 +17,10 @@ route planner's terrain/slope assessment is separate.
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from .config import settings
 from .rems import REMS_URL
 
-RAD_SOURCE_URL = "https://science.nasa.gov/mission/msl-curiosity/science-instruments/"
+RAD_SOURCE_URL = settings.rad_source_url
 
 # Curiosity RAD surface dose average, mSv/day (NASA/JPL).
 RAD_BASELINE_MSV_DAY = 0.64
@@ -47,54 +48,54 @@ class Zone:
     dust: float
     science_value: Literal["high", "medium", "low"]
     scenic: str
-    source_url: str = RAD_SOURCE_URL
+    source_url: str = ""
 
 
 # Anchored at IAU/USGS Gazetteer sites. Elevations are approximate regional
 # values (MOLA datum) used only to scale the screening model.
 ZONES: tuple[Zone, ...] = (
     Zone("gale", "Gale Crater", 137.81, -5.37, 90, -4400, 0.40, "high",
-         "Layered Mount Sharp and ancient lakebeds: the default science stop."),
+         "Layered Mount Sharp and ancient lakebeds: the default science stop.", source_url=RAD_SOURCE_URL),
     Zone("mount-sharp", "Mount Sharp (Aeolis Mons)", 137.85, -5.08, 55, 3000, 0.40, "high",
          "A km-scale stack of exposed strata recording early Mars climate change.", source_url=REMS_URL),
     Zone("jezero", "Jezero Crater", 77.69, 18.41, 45, -2600, 0.40, "high",
-         "A river delta built into an ancient lake: prime biosignature ground."),
+         "A river delta built into an ancient lake: prime biosignature ground.", source_url=RAD_SOURCE_URL),
     Zone("olympus", "Olympus Mons", 226.20, 18.65, 260, 21200, 0.30, "high",
-         "The tallest volcano in the solar system; sheer scale and lava flows."),
+         "The tallest volcano in the solar system; sheer scale and lava flows.", source_url=RAD_SOURCE_URL),
     Zone("valles-marineris", "Valles Marineris", 301.41, -14.01, 300, -4000, 0.55, "high",
-         "The largest canyon system on Mars, with walls exposing deep crust."),
+         "The largest canyon system on Mars, with walls exposing deep crust.", source_url=RAD_SOURCE_URL),
     Zone("hellas", "Hellas Planitia", 70.50, -42.43, 300, -7000, 0.60, "high",
-         "A vast impact basin, the deepest exposed terrain in the southern hemisphere."),
+         "A vast impact basin, the deepest exposed terrain in the southern hemisphere.", source_url=RAD_SOURCE_URL),
     Zone("elysium", "Elysium Mons", 147.21, 25.02, 160, 14000, 0.35, "medium",
-         "A broad shield volcano on the Elysium rise."),
+         "A broad shield volcano on the Elysium rise.", source_url=RAD_SOURCE_URL),
     Zone("argyre", "Argyre Planitia", 316.69, -49.84, 260, -5300, 0.35, "medium",
-         "A bright southern impact basin ringed by rugged highlands."),
+         "A bright southern impact basin ringed by rugged highlands.", source_url=RAD_SOURCE_URL),
     Zone("syrtis", "Syrtis Major Planitia", 69.50, 9.39, 220, 1000, 0.50, "medium",
-         "A dark, wind-sculpted volcanic region with a striking albedo contrast."),
+         "A dark, wind-sculpted volcanic region with a striking albedo contrast.", source_url=RAD_SOURCE_URL),
     Zone("meridiani", "Meridiani Planum", 356.86, -0.04, 160, -1400, 0.40, "medium",
-         "Flat hematite-bearing plains explored by Opportunity."),
+         "Flat hematite-bearing plains explored by Opportunity.", source_url=RAD_SOURCE_URL),
     Zone("gusev", "Gusev Crater", 175.52, -14.53, 90, -1900, 0.40, "medium",
-         "An ancient crater lakebed explored by Spirit."),
+         "An ancient crater lakebed explored by Spirit.", source_url=RAD_SOURCE_URL),
     Zone("isidis", "Isidis Planitia", 88.38, 13.94, 220, -3800, 0.40, "medium",
-         "A low basin on the edge of the northern plains."),
+         "A low basin on the edge of the northern plains.", source_url=RAD_SOURCE_URL),
     Zone("utopia", "Utopia Planitia", 117.52, 46.74, 300, -5000, 0.35, "medium",
-         "Northern plains with patterned ground and buried ice."),
+         "Northern plains with patterned ground and buried ice.", source_url=RAD_SOURCE_URL),
     Zone("chryse", "Chryse Planitia", 319.69, 28.43, 220, -2500, 0.40, "medium",
-         "Low northern plains where Viking 1 landed."),
+         "Low northern plains where Viking 1 landed.", source_url=RAD_SOURCE_URL),
     Zone("noctis", "Noctis Labyrinthus", 258.81, -6.36, 180, -3000, 0.55, "high",
-         "A maze of interconnected canyons west of Valles Marineris."),
+         "A maze of interconnected canyons west of Valles Marineris.", source_url=RAD_SOURCE_URL),
     Zone("ascraeus", "Ascraeus Mons", 255.92, 11.92, 140, 18000, 0.30, "medium",
-         "A Tharsis shield volcano with complex summit calderas."),
+         "A Tharsis shield volcano with complex summit calderas.", source_url=RAD_SOURCE_URL),
     Zone("pavonis", "Pavonis Mons", 247.04, 1.48, 130, 14000, 0.30, "medium",
-         "A Tharsis shield volcano straddling the equator."),
+         "A Tharsis shield volcano straddling the equator.", source_url=RAD_SOURCE_URL),
     Zone("arsia", "Arsia Mons", 239.91, -8.26, 130, 17000, 0.30, "medium",
-         "A Tharsis shield volcano with a prominent summit caldera."),
+         "A Tharsis shield volcano with a prominent summit caldera.", source_url=RAD_SOURCE_URL),
     Zone("alba", "Alba Mons", 249.29, 41.08, 300, 9000, 0.35, "medium",
-         "A low, wide volcano with a vast flow field."),
+         "A low, wide volcano with a vast flow field.", source_url=RAD_SOURCE_URL),
     Zone("huygens", "Huygens Crater", 55.58, -13.88, 120, 1000, 0.45, "low",
-         "A large degraded impact crater in the southern highlands."),
+         "A large degraded impact crater in the southern highlands.", source_url=RAD_SOURCE_URL),
     Zone("schiaparelli", "Schiaparelli Crater", 16.77, -2.71, 60, -2000, 0.45, "low",
-         "An equatorial crater and the ExoMars Schiaparelli landing site."),
+         "An equatorial crater and the ExoMars Schiaparelli landing site.", source_url=RAD_SOURCE_URL),
 )
 
 

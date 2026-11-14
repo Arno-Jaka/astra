@@ -38,9 +38,7 @@ def danger_envelope_deg(slope_limit_deg: float) -> float:
     return max(
         DANGER_ROLLOVER_DEG, slope_limit_deg + DANGER_ROLLOVER_MARGIN_DEG
     )
-SOURCE_URL = (
-    "https://pds-geosciences.wustl.edu/mgs/urn-nasa-pds-mgs_mola_topography_derived/"
-)
+SOURCE_URL = settings.mola_source_url
 DEFAULT_DEM = (
     Path(__file__).resolve().parents[1] / "data" / "dem" / "megt90n000fb.img"
 )

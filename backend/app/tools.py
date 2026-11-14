@@ -6,6 +6,7 @@ from agno.tools import tool
 
 from .channel import channel
 from .commands import CommandError
+from .config import settings
 from .dem import PACE_M_S, pixel_size_km
 from .dem import SOURCE_URL as MOLA_URL
 from .dem import plan as plan_dem_route
@@ -13,7 +14,7 @@ from .gazetteer import resolve
 from .regions import briefing_for
 from .rems import REMS_URL, latest_sol
 
-IMAGERY_URL = "https://trek.nasa.gov/mars/"
+IMAGERY_URL = settings.trek_imagery_base_url
 MARS_RADIUS_KM = 3396.19
 
 

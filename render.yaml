@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: astra
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: CORS_ORIGINS
+        value: https://astra.onrender.com
+      - key: GROQ_API_KEY
+        sync: false
+      - key: NASA_API_KEY
+        sync: false
+      - key: TTS_PROVIDER
+        value: edge
+      - key: MOLA_SOURCE_URL
+        value: https://pds-geosciences.wustl.edu/mgs/urn-nasa-pds-mgs_mola_topography_derived/
+      - key: TREK_IMAGERY_BASE_URL
+        value: https://trek.nasa.gov/mars/
+      - key: TREK_TILE_BASE_URL
+        value: https://trek.nasa.gov/tiles/Mars/EQ
+      - key: TREK_VIKING_IMAGERY_PATH
+        value: Mars_Viking_MDIM21_ClrMosaic_global_232m/1.0.0/default/default028mm/
+      - key: MSL_SOURCE_URL
+        value: https://science.nasa.gov/mission/msl-curiosity/
+      - key: M2020_SOURCE_URL
+        value: https://science.nasa.gov/mission/mars-2020-perseverance/
+      - key: GAZETTEER_URL
+        value: https://planetarynames.wr.usgs.gov/
+      - key: REMS_URL
+        value: https://mars.nasa.gov/rss/api/?feed=weather&category=msl&feedtype=json
+      - key: REMS_USER_AGENT
+        value: ASTRA/0.1 (NASA Space Apps)
+      - key: BOXWORK_SOURCE_URL
+        value: https://science.nasa.gov/photojournal/curiosity-views-boxwork-patterns-at-a-distance/
+      - key: BOXWORK_IMAGE_URL
+        value: https://assets.science.nasa.gov/content/dam/science/psd/photojournal/pia/pia26/pia26560/PIA26560.jpg
+      - key: RAD_SOURCE_URL
+        value: https://science.nasa.gov/mission/msl-curiosity/science-instruments/

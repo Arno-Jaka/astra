@@ -1,10 +1,12 @@
 from dataclasses import dataclass
 
-GAZETTEER_URL = "https://planetarynames.wr.usgs.gov/"
+from .config import settings
+
+GAZETTEER_URL = settings.gazetteer_url
 
 
 def feature_url(feature_id: int) -> str:
-    return f"{GAZETTEER_URL}Feature/{feature_id}"
+    return f"{GAZETTEER_URL.rstrip('/')}/Feature/{feature_id}"
 
 
 @dataclass(frozen=True)
@@ -15,7 +17,7 @@ class Site:
     aliases: tuple[str, ...]
     kind: str = ""
     description: str = ""
-    source_url: str = GAZETTEER_URL
+    source_url: str = ""
 
 
 # Coordinates are from the IAU/USGS Gazetteer of Planetary Nomenclature

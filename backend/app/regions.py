@@ -1,10 +1,11 @@
 from typing import Any
 
+from .config import settings
 from .rems import REMS_URL
 
-MSL_URL = "https://science.nasa.gov/mission/msl-curiosity/"
-M2020_URL = "https://science.nasa.gov/mission/mars-2020-perseverance/"
-GAZETTEER_URL = "https://planetarynames.wr.usgs.gov/"
+MSL_URL = settings.msl_source_url
+M2020_URL = settings.m2020_source_url
+GAZETTEER_URL = settings.gazetteer_url
 
 BRIEFINGS: dict[str, dict[str, Any]] = {
     "Gale Crater": {

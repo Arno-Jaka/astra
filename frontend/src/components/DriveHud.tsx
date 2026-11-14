@@ -36,7 +36,7 @@ export default function DriveHud() {
   const progress = totalKm > 0 ? Math.min(100, (distanceKm / totalKm) * 100) : 0
 
   return (
-    <FloatingPanel id="drive" title={vehicleName} width={600} initial={{ left: 'calc(50% - 300px)', bottom: 20 }}>
+    <FloatingPanel id="drive" title={vehicleName} width={600} initial={{ left: 'calc(50% - 300px)', bottom: 16 }}>
     <div className="p-2 text-sm [&_p]:text-xs [&_select]:text-sm [&_button]:text-sm">
       {crash ? (
         <div className="mb-1.5 rounded-lg border border-red-500/50 bg-red-950/85 px-3 py-2 text-center text-[11px] font-medium text-red-200 shadow-2xl backdrop-blur-xl">
@@ -130,7 +130,7 @@ export default function DriveHud() {
         {vehicle === 'rover' && <details className="pointer-events-auto mt-3 border-t border-white/10 pt-2 text-xs text-neutral-400">
           <summary className="cursor-pointer">Optional hazard training · CO₂ jet</summary>
           <p className="mt-2">NASA observes seasonal CO₂ jets at the south pole. No jets are identified along this route. The launch impulse and vehicle response below are hypothetical training.</p>
-          <a href="https://images.nasa.gov/details/PIA22587" target="_blank" rel="noreferrer" className="text-cyan-300 underline">NASA MRO / HiRISE · PIA22587</a>
+          <a href={import.meta.env.VITE_NASA_JET_DRILL_URL || "https://images.nasa.gov/details/PIA22587"} target="_blank" rel="noreferrer" className="text-cyan-300 underline">NASA MRO / HiRISE · PIA22587</a>
           <button type="button" disabled={loading || !!crash || stopping} onClick={triggerJet} className="ml-3 rounded border border-amber-400/40 px-3 py-2 text-amber-200 disabled:opacity-40">Trigger jet drill</button>
         </details>}
         <p className="mt-2 text-[9px] text-neutral-400">NASA MOLA hills · illustrative texture, dust, trails & vehicle dynamics</p>

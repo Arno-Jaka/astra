@@ -1,7 +1,8 @@
 // Requires the dev servers and Chrome --remote-debugging-port=9222.
 import assert from 'node:assert/strict'
 
-const pages = await (await fetch(`${process.env.CDP_URL ?? 'http://localhost:9222'}/json/list`)).json()
+const cdpUrl = process.env.CDP_URL || 'http://localhost:9222'
+const pages = await (await fetch(`${cdpUrl}/json/list`)).json()
 const socket = new WebSocket(pages.find(page => page.type === 'page').webSocketDebuggerUrl)
 await new Promise(resolve => socket.addEventListener('open', resolve, { once: true }))
 let id = 0
@@ -31,7 +32,7 @@ const button = text => `[...document.querySelectorAll('button')].find(e=>e.textC
 try {
   await call('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
   await call('Network.enable')
-  await call('Page.navigate', { url: process.env.APP_URL ?? 'http://localhost:5173' })
+  await call('Page.navigate', { url: process.env.APP_URL || 'http://localhost:5173' })
   await delay(2000)
   await waitFor(`globalThis.__astraViewer && document.querySelector('[aria-label="Search Mars sites"]')`)
   await evaluate(`(async()=>{const source=await(await fetch('/src/components/MapExplorer.tsx')).text();

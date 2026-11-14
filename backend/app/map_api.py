@@ -11,6 +11,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from . import dem, environment
+from .config import settings
 from .dem import MARS_RADIUS_KM, DemUnavailable, heightmap
 from .gazetteer import SITES
 from .location_context import location_context
@@ -61,11 +62,13 @@ def inspect_location(lon: float, lat: float) -> dict[str, Any]:
             "context_site": nearest.name,
         },
         "nearest": location_context(lon, lat),
-        "image_url": "https://trek.nasa.gov/tiles/Mars/EQ/"
-                     "Mars_Viking_MDIM21_ClrMosaic_global_232m/1.0.0/default/default028mm/"
-                     f"7/{row}/{col}.jpg",
+        "image_url": (
+            f"{settings.trek_tile_base_url.rstrip('/')}/"
+            f"{settings.trek_viking_imagery_path.lstrip('/')}"
+            f"7/{row}/{col}.jpg"
+        ),
         "image_x": x - col, "image_y": y - row,
-        "source_url": dem.SOURCE_URL, "imagery_source_url": "https://trek.nasa.gov/mars/",
+        "source_url": dem.SOURCE_URL, "imagery_source_url": settings.trek_imagery_base_url,
     }
 
 

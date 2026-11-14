@@ -41,7 +41,7 @@ import type {
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import DriveHud from '../components/DriveHud'
 import MapExplorer from '../components/MapExplorer'
-import RoverCameraWindow, { type RoverViewPose } from '../components/RoverCameraWindow'
+
 import LayerPanel from '../components/LayerPanel'
 import SciencePanel from '../components/SciencePanel'
 import ScienceToast from '../components/ScienceToast'
@@ -365,7 +365,6 @@ async function presampleCorridor(
 
 export default function CesiumMap() {
   const containerRef = useRef<HTMLDivElement>(null)
-  const roverViewRef = useRef<RoverViewPose | null>(null)
   const [mapViewer, setMapViewer] = useState<Viewer | null>(null)
   const [terrainStatus, setTerrainStatus] = useState<'loading' | 'ready' | 'fallback'>('loading')
   const retryTerrainRef = useRef<() => void>(() => {})
@@ -422,7 +421,14 @@ export default function CesiumMap() {
     ;(viewer.camera.frustum as PerspectiveFrustum).fov = CesiumMath.toRadians(
       55,
     )
-    if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = false
+    if (viewer.scene.skyAtmosphere) {
+      // A thin, dusty Mars sky: visible near the surface, hidden in globe view.
+      viewer.scene.skyAtmosphere.show = false
+      viewer.scene.skyAtmosphere.hueShift = -0.08
+      viewer.scene.skyAtmosphere.saturationShift = -0.15
+      viewer.scene.skyAtmosphere.brightnessShift = -0.08
+    }
+    viewer.scene.backgroundColor = Color.fromCssColorString('#120b08')
 
     // Visible, illustrative surface weather. It follows the active asset and
     // is independent of the derived regional screening values.
@@ -571,6 +577,7 @@ export default function CesiumMap() {
     let promptCooldownUntil = 0
     let lastWorkPush = 0
     let parkedSev: Model | null = null
+    let roverHeading = 0
 
     /** Drop the field crew and its dev-only debug handle together. */
     const destroyScienceCrew = () => {
@@ -600,6 +607,11 @@ export default function CesiumMap() {
       animationLast = now
       const drive = useDriveStore.getState()
       if (scoutModel?.ready && !drive.loading && !drive.crash && drive.speedMps < 0.02) scanSeconds += dt
+      // Show the Mars sky only near the surface; keep it invisible in globe view.
+      if (viewer.scene.skyAtmosphere) {
+        const cameraHeight = viewer.camera.positionCartographic.height
+        viewer.scene.skyAtmosphere.show = Number.isFinite(cameraHeight) && cameraHeight < 1_500_000
+      }
       // The weather layer advances with the render clock, even when no asset
       // is moving, so an event can fade in before the drive starts.
       const weather = useWeatherStore.getState()
@@ -635,7 +647,7 @@ export default function CesiumMap() {
       scienceFramePrev = 0
       useScienceStore.getState().endScience()
       scanSeconds = 0
-      roverViewRef.current = null
+      roverHeading = 0
       weatherFx.clearAnchor()
       wheelDust?.destroy()
       wheelDust = null
@@ -830,8 +842,7 @@ export default function CesiumMap() {
       const now = performance.now()
       const controls = useDriveStore.getState()
       if (surfaceCrew && (!controls.active || controls.missionPhase === 'rover-approach')) {
-        const heading = roverViewRef.current?.heading ?? 0
-        surfaceCrew.setWeather(weatherFx.rollForHeading(heading), weatherFx.tint)
+        surfaceCrew.setWeather(weatherFx.rollForHeading(roverHeading), weatherFx.tint)
         surfaceCrew.update(document.hidden || controls.paused ? 0 : Math.min(0.1, (now - crewIdleTime) / 1000), 0)
       }
       crewIdleTime = now
@@ -1277,1024 +1288,1033 @@ export default function CesiumMap() {
       const token = ++scoutToken
       // The scout drives whichever traverse the user selected: the safe
       // (planner-approved) route or the hazardous direct comparison,
-      // falling back to the safe route when no comparison exists.
-      const choice = useAppStore.getState().routeChoice
-      const hazardous = choice === 'hazardous' ? route.hazardous : null
-      const traverse: TraversableRoute = hazardous ?? route
-      const assignment = assignVehicle(hazardous ?? route, route.slope_limit_deg, route.crew_estimate?.profile)
-      const plan = planCrewMission(hazardous ?? route, route.slope_limit_deg, assignment.vehicle)
-      if (!deploying && !plan.available) {
-        useDriveStore.getState().end()
-        useDriveStore.getState().update({ completion: 'risk-hold', missionPhase: 'hold', crewMessage: plan.reason })
-        useAppStore.getState().setRoutePhase('preview')
-        setPreviewMarkerVisible(true)
-        return
-      }
-      const vehicle = deploying ? 'rover' : 'sev'
-      activeVehicleModel = vehicleModel(vehicle)
-      const cameraScale = activeVehicleModel.cameraScale
-      useDriveStore.getState().update({ vehicle, completion: 'idle', missionPhase: deploying ? 'rover-approach' : 'aboard', crewMessage: plan.reason })
-      const initialT = deploymentT ?? 0
-      const finalDestinationT = deploying ? 1 : plan.stagingT
-      let destinationT = finalDestinationT
-      /** Signed lateral parking offset for a science detour (m). */
-      let destinationSideM = 0
-      let lateralM = 0
-      const startSample = sampleRoute(traverse, initialT)
-      roverViewRef.current = { position: Cartesian3.fromDegrees(startSample.lon, startSample.lat, groundAt(startSample, null), MARS), heading: startSample.bearing, terrainProvider }
-      useDriveStore.getState().update({ totalKm: traverse.distance_km })
-      const dangers = hazardous ? hazardous.dangers : (route.dangers ?? [])
-      viewer.entities.add({
-        id: 'astra-scout',
-        position: Cartesian3.fromDegrees(
-          traverse.coordinates[0]?.[0] ?? 0,
-          traverse.coordinates[0]?.[1] ?? 0,
-          0,
-          MARS,
-        ),
-        point: {
-          pixelSize: 7,
-          color: Color.CYAN,
-          outlineColor: Color.BLACK,
-          outlineWidth: 2,
-          heightReference: HeightReference.CLAMP_TO_GROUND,
-          disableDepthTestDistance: Number.POSITIVE_INFINITY,
-        },
-        label: {
-          text: `${deploying ? 'Robotic rover' : 'SEV · crew of 3 aboard'} · simulated`,
-          font: '11px sans-serif',
-          fillColor: Color.WHITE,
-          showBackground: true,
-          backgroundColor: Color.fromCssColorString('#001018cc'),
-          pixelOffset: new Cartesian2(0, -20),
-          verticalOrigin: VerticalOrigin.BOTTOM,
-          heightReference: HeightReference.CLAMP_TO_GROUND,
-          disableDepthTestDistance: Number.POSITIVE_INFINITY,
-        },
-      })
-
-      // Fire the corridor pre-sample in parallel with the model load: it
-      // warms the /api/dem/tile HTTP cache the globe will hit during the
-      // drive and gives the rover mesh-consistent ground heights.
-      const corridorPromise = presampleCorridor(traverse, terrainProvider)
-
       try {
-        const model = await Model.fromGltfAsync({
-          url: activeVehicleModel.url,
-          // A fixed physical scale is essential for terrain contact.
-          scale: 1,
-          modelMatrix: Transforms.eastNorthUpToFixedFrame(
-            Cartesian3.fromDegrees(startSample.lon, startSample.lat, groundAt(startSample, null) + ROVER_GROUND_CLEARANCE, MARS), MARS,
-          ),
-        })
-        if (token !== scoutToken) {
-          model.destroy()
+        // falling back to the safe route when no comparison exists.
+        const choice = useAppStore.getState().routeChoice
+        const hazardous = choice === 'hazardous' ? route.hazardous : null
+        const traverse: TraversableRoute = hazardous ?? route
+        const assignment = assignVehicle(hazardous ?? route, route.slope_limit_deg, route.crew_estimate?.profile)
+        const plan = planCrewMission(hazardous ?? route, route.slope_limit_deg, assignment.vehicle)
+        if (!deploying && !plan.available) {
+          useDriveStore.getState().end()
+          useDriveStore.getState().update({ completion: 'risk-hold', missionPhase: 'hold', crewMessage: plan.reason })
+          useAppStore.getState().setRoutePhase('preview')
+          setPreviewMarkerVisible(true)
           return
         }
-        viewer.scene.primitives.add(model)
-        scoutModel = model
-        if (import.meta.env.DEV) {
-          ;(globalThis as unknown as Record<string, unknown>).__astraScout =
-            model
-        }
-        const prepareAnimation = async () => {
-          if (!model.ready) {
-            await new Promise<void>((resolve) => {
-              const remove = model.readyEvent.addEventListener(() => {
-                remove()
-                resolve()
-              })
-            })
+        const vehicle = deploying ? 'rover' : 'sev'
+        activeVehicleModel = vehicleModel(vehicle)
+        const cameraScale = activeVehicleModel.cameraScale
+        useDriveStore.getState().update({ vehicle, completion: 'idle', missionPhase: deploying ? 'rover-approach' : 'aboard', crewMessage: plan.reason })
+        const initialT = deploymentT ?? 0
+        const finalDestinationT = deploying ? 1 : plan.stagingT
+        let destinationT = finalDestinationT
+        /** Signed lateral parking offset for a science detour (m). */
+        let destinationSideM = 0
+        let lateralM = 0
+        const startSample = sampleRoute(traverse, initialT)
+        roverHeading = startSample.bearing
+        useDriveStore.getState().update({ totalKm: traverse.distance_km })
+        const dangers = hazardous ? hazardous.dangers : (route.dangers ?? [])
+        viewer.entities.add({
+          id: 'astra-scout',
+          position: Cartesian3.fromDegrees(
+            traverse.coordinates[0]?.[0] ?? 0,
+            traverse.coordinates[0]?.[1] ?? 0,
+            0,
+            MARS,
+          ),
+          point: {
+            pixelSize: 7,
+            color: Color.CYAN,
+            outlineColor: Color.BLACK,
+            outlineWidth: 2,
+            heightReference: HeightReference.CLAMP_TO_GROUND,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+          label: {
+            text: `${deploying ? 'Robotic rover' : 'SEV · crew of 3 aboard'} · simulated`,
+            font: '11px sans-serif',
+            fillColor: Color.WHITE,
+            showBackground: true,
+            backgroundColor: Color.fromCssColorString('#001018cc'),
+            pixelOffset: new Cartesian2(0, -20),
+            verticalOrigin: VerticalOrigin.BOTTOM,
+            heightReference: HeightReference.CLAMP_TO_GROUND,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        })
+
+        // Fire the corridor pre-sample in parallel with the model load: it
+        // warms the /api/dem/tile HTTP cache the globe will hit during the
+        // drive and gives the rover mesh-consistent ground heights.
+        const corridorPromise = presampleCorridor(traverse, terrainProvider)
+
+        try {
+          const model = await Model.fromGltfAsync({
+            url: activeVehicleModel.url,
+            // A fixed physical scale is essential for terrain contact.
+            scale: 1,
+            modelMatrix: Transforms.eastNorthUpToFixedFrame(
+              Cartesian3.fromDegrees(startSample.lon, startSample.lat, groundAt(startSample, null) + ROVER_GROUND_CLEARANCE, MARS), MARS,
+            ),
+          })
+          if (token !== scoutToken) {
+            model.destroy()
+            return
           }
-          if (token !== scoutToken) return
-          if (vehicle === 'sev') return // Supplied SEV is static; no rover mast/manipulator clips.
-          const deploymentStart = performance.now()
-          let deploymentProgress = 0
-          try {
-            model.activeAnimations.add({
-              name: 'ArmatureAction',
-              loop: ModelAnimationLoop.NONE,
-              multiplier: 2,
-              animationTime: () => {
-                if (!useDriveStore.getState().crash) deploymentProgress = Math.min(1, (performance.now() - deploymentStart) / 7500)
-                return deploymentProgress
-              },
-            })
-          } catch {
+          viewer.scene.primitives.add(model)
+          scoutModel = model
+          if (import.meta.env.DEV) {
+            ;(globalThis as unknown as Record<string, unknown>).__astraScout =
+              model
+          }
+          const prepareAnimation = async () => {
+            if (!model.ready) {
+              await new Promise<void>((resolve) => {
+                const remove = model.readyEvent.addEventListener(() => {
+                  remove()
+                  resolve()
+                })
+              })
+            }
+            if (token !== scoutToken) return
+            if (vehicle === 'sev') return // Supplied SEV is static; no rover mast/manipulator clips.
+            const deploymentStart = performance.now()
+            let deploymentProgress = 0
             try {
               model.activeAnimations.add({
-                index: 6,
+                name: 'ArmatureAction',
                 loop: ModelAnimationLoop.NONE,
+                multiplier: 2,
+                animationTime: () => {
+                  if (!useDriveStore.getState().crash) deploymentProgress = Math.min(1, (performance.now() - deploymentStart) / 7500)
+                  return deploymentProgress
+                },
               })
             } catch {
-              // The clip is optional; the scout marker still moves.
+              try {
+                model.activeAnimations.add({
+                  index: 6,
+                  loop: ModelAnimationLoop.NONE,
+                })
+              } catch {
+                // The clip is optional; the scout marker still moves.
+              }
             }
+            // The supplied GLB has mast/manipulator clips, but no wheel-spin
+            // clip. Deploy the mast once; scan only while stationary. Leave
+            // manipulator deployment stowed during all traverses and crashes.
+            try {
+              model.activeAnimations.add({
+                name: 'topAction', loop: ModelAnimationLoop.REPEAT,
+                animationTime: () => (scanSeconds % 20) / 20,
+              })
+            } catch { /* model variants may omit mast scanning */ }
           }
-          // The supplied GLB has mast/manipulator clips, but no wheel-spin
-          // clip. Deploy the mast once; scan only while stationary. Leave
-          // manipulator deployment stowed during all traverses and crashes.
-          try {
-            model.activeAnimations.add({
-              name: 'topAction', loop: ModelAnimationLoop.REPEAT,
-              animationTime: () => (scanSeconds % 20) / 20,
-            })
-          } catch { /* model variants may omit mast scanning */ }
+          await prepareAnimation()
+        } catch (error) {
+          console.warn(`${assignment.label} model failed to load; using marker only.`, error)
         }
-        await prepareAnimation()
-      } catch (error) {
-        console.warn(`${assignment.label} model failed to load; using marker only.`, error)
-      }
 
-      const corridor = await corridorPromise
-      if (token !== scoutToken) return
+        const corridor = await corridorPromise
+        if (token !== scoutToken) return
 
-      const startGround = groundAt(startSample, corridor)
-      driveSurface = createDriveSurface(viewer, traverse)
-      wheelDust = createWheelDust(viewer)
-      driveSurface.update(startSample.distanceKm * 1000, performance.now())
-      const start = Cartesian3.fromDegrees(
-        startSample.lon,
-        startSample.lat,
-        startGround,
-        MARS,
-      )
-      let bearing = startSample.bearing
-      let up = terrainNormalAt(startSample.lon, startSample.lat)
-
-      const orbit: OrbitState = {
-        yaw: 0,
-        pitch: ORBIT.defaultPitch,
-        distance: ORBIT.defaultDistance * cameraScale,
-        dragging: false,
-      }
-      /** Look-at point: mast height above the rover, slightly ahead along
-       *  the heading so the view shows the terrain being driven into. */
-      const aimPoint = (position: Cartesian3, heading: number) => {
-        const frame = Transforms.eastNorthUpToFixedFrame(position, MARS)
-        return Matrix4.multiplyByPoint(
-          frame,
-          new Cartesian3(
-            Math.sin(heading) * CHASE.aimLeadM,
-            Math.cos(heading) * CHASE.aimLeadM,
-            activeVehicleModel.aimHeight,
-          ),
-          new Cartesian3(),
+        const startGround = groundAt(startSample, corridor)
+        driveSurface = createDriveSurface(viewer, traverse)
+        wheelDust = createWheelDust(viewer)
+        driveSurface.update(startSample.distanceKm * 1000, performance.now())
+        const start = Cartesian3.fromDegrees(
+          startSample.lon,
+          startSample.lat,
+          startGround,
+          MARS,
         )
-      }
+        let bearing = startSample.bearing
+        let up = terrainNormalAt(startSample.lon, startSample.lat)
 
-      // Teleport into the chase pose (offset ~30 m up along the surface
-      // normal), then swoop down into place. A single flyTo from the route
-      // overview would interpolate across kilometers of terrain and clip
-      // through Mount Sharp; the swoop path stays within 30 m of the
-      // already terrain-clamped chase position.
-      const introPose = orbitPose(
-        start,
-        aimPoint(start, bearing),
-        bearing,
-        orbit,
-        startGround,
-      )
-      viewer.camera.setView({
-        destination: Cartesian3.add(
-          introPose.destination,
-          Cartesian3.multiplyByScalar(
-            MARS.geodeticSurfaceNormal(introPose.destination, new Cartesian3()),
-            30,
+        const orbit: OrbitState = {
+          yaw: 0,
+          pitch: ORBIT.defaultPitch,
+          distance: ORBIT.defaultDistance * cameraScale,
+          dragging: false,
+        }
+        /** Look-at point: mast height above the rover, slightly ahead along
+         *  the heading so the view shows the terrain being driven into. */
+        const aimPoint = (position: Cartesian3, heading: number) => {
+          const frame = Transforms.eastNorthUpToFixedFrame(position, MARS)
+          return Matrix4.multiplyByPoint(
+            frame,
+            new Cartesian3(
+              Math.sin(heading) * CHASE.aimLeadM,
+              Math.cos(heading) * CHASE.aimLeadM,
+              activeVehicleModel.aimHeight,
+            ),
+            new Cartesian3(),
+          )
+        }
+
+        // Teleport into the chase pose (offset ~30 m up along the surface
+        // normal), then swoop down into place. A single flyTo from the route
+        // overview would interpolate across kilometers of terrain and clip
+        // through Mount Sharp; the swoop path stays within 30 m of the
+        // already terrain-clamped chase position.
+        const introPose = orbitPose(
+          start,
+          aimPoint(start, bearing),
+          bearing,
+          orbit,
+          startGround,
+        )
+        viewer.camera.setView({
+          destination: Cartesian3.add(
+            introPose.destination,
+            Cartesian3.multiplyByScalar(
+              MARS.geodeticSurfaceNormal(introPose.destination, new Cartesian3()),
+              30,
+              new Cartesian3(),
+            ),
             new Cartesian3(),
           ),
-          new Cartesian3(),
-        ),
-        orientation: introPose.orientation,
-      })
-      await new Promise<void>((resolve) => {
-        viewer.camera.flyTo({
-          ...introPose,
-          duration: 1.2,
-          complete: () => resolve(),
-          cancel: () => resolve(),
+          orientation: introPose.orientation,
         })
-      })
-      if (token !== scoutToken) return
-      chaseActive = true
-      viewer.scene.screenSpaceCameraController.enableInputs = false
+        await new Promise<void>((resolve) => {
+          viewer.camera.flyTo({
+            ...introPose,
+            duration: 1.2,
+            complete: () => resolve(),
+            cancel: () => resolve(),
+          })
+        })
+        if (token !== scoutToken) return
+        chaseActive = true
+        viewer.scene.screenSpaceCameraController.enableInputs = false
 
-      // Game-style camera controls while driving: drag to orbit, scroll to
-      // zoom. The default camera controller is disabled during the chase.
-      chaseHandler = new ScreenSpaceEventHandler(viewer.canvas)
-      chaseHandler.setInputAction(() => {
-        orbit.dragging = true
-      }, ScreenSpaceEventType.LEFT_DOWN)
-      chaseHandler.setInputAction(() => {
-        orbit.dragging = false
-      }, ScreenSpaceEventType.LEFT_UP)
-      chaseHandler.setInputAction(
-        (movement: ScreenSpaceEventHandler.MotionEvent) => {
-          if (!orbit.dragging) return
-          const dx = movement.endPosition.x - movement.startPosition.x
-          const dy = movement.endPosition.y - movement.startPosition.y
-          orbit.yaw -= dx * ORBIT.dragYawPerPx
-          orbit.pitch = Math.min(
-            ORBIT.maxPitch,
-            Math.max(ORBIT.minPitch, orbit.pitch + dy * ORBIT.dragPitchPerPx),
-          )
-        },
-        ScreenSpaceEventType.MOUSE_MOVE,
-      )
-      chaseHandler.setInputAction((delta: number) => {
-        orbit.distance = Math.min(
-          ORBIT.maxDistance * cameraScale,
-          Math.max(
-            ORBIT.minDistance * cameraScale,
-            orbit.distance * (delta > 0 ? 1.15 : 0.87),
-          ),
+        // Game-style camera controls while driving: drag to orbit, scroll to
+        // zoom. The default camera controller is disabled during the chase.
+        chaseHandler = new ScreenSpaceEventHandler(viewer.canvas)
+        chaseHandler.setInputAction(() => {
+          orbit.dragging = true
+        }, ScreenSpaceEventType.LEFT_DOWN)
+        chaseHandler.setInputAction(() => {
+          orbit.dragging = false
+        }, ScreenSpaceEventType.LEFT_UP)
+        chaseHandler.setInputAction(
+          (movement: ScreenSpaceEventHandler.MotionEvent) => {
+            if (!orbit.dragging) return
+            const dx = movement.endPosition.x - movement.startPosition.x
+            const dy = movement.endPosition.y - movement.startPosition.y
+            orbit.yaw -= dx * ORBIT.dragYawPerPx
+            orbit.pitch = Math.min(
+              ORBIT.maxPitch,
+              Math.max(ORBIT.minPitch, orbit.pitch + dy * ORBIT.dragPitchPerPx),
+            )
+          },
+          ScreenSpaceEventType.MOUSE_MOVE,
         )
-      }, ScreenSpaceEventType.WHEEL)
+        chaseHandler.setInputAction((delta: number) => {
+          orbit.distance = Math.min(
+            ORBIT.maxDistance * cameraScale,
+            Math.max(
+              ORBIT.minDistance * cameraScale,
+              orbit.distance * (delta > 0 ? 1.15 : 0.87),
+            ),
+          )
+        }, ScreenSpaceEventType.WHEEL)
 
-      // Keyboard drive controls: speed multiplier, pause, camera recenter,
-      // early exit. Skipped while typing in the chat box.
-      let speedMult = 1
-      let paused = false
-      const isTypingTarget = (target: EventTarget | null): boolean =>
-        target instanceof HTMLElement &&
-        (target.tagName === 'INPUT' ||
-          target.tagName === 'TEXTAREA' ||
-          target.tagName === 'BUTTON' ||
-          target.tagName === 'SELECT' ||
-          target.isContentEditable)
-      chaseKeydown = (event: KeyboardEvent) => {
-        if (!chaseActive || isTypingTarget(event.target)) return
-        if (useDriveStore.getState().braking &&
-          (KEYS.speedUp.includes(event.code) || KEYS.slowDown.includes(event.code))) {
+        // Keyboard drive controls: speed multiplier, pause, camera recenter,
+        // early exit. Skipped while typing in the chat box.
+        let speedMult = 1
+        let paused = false
+        const isTypingTarget = (target: EventTarget | null): boolean =>
+          target instanceof HTMLElement &&
+          (target.tagName === 'INPUT' ||
+            target.tagName === 'TEXTAREA' ||
+            target.tagName === 'BUTTON' ||
+            target.tagName === 'SELECT' ||
+            target.isContentEditable)
+        chaseKeydown = (event: KeyboardEvent) => {
+          if (!chaseActive || isTypingTarget(event.target)) return
+          if (useDriveStore.getState().braking &&
+            (KEYS.speedUp.includes(event.code) || KEYS.slowDown.includes(event.code))) {
+            event.preventDefault()
+            return
+          }
+          if (KEYS.speedUp.includes(event.code)) {
+            speedMult = Math.min(SPEED_MAX, speedMult * SPEED_STEP)
+          } else if (KEYS.slowDown.includes(event.code)) {
+            speedMult = Math.max(SPEED_MIN, speedMult / SPEED_STEP)
+          } else if (KEYS.pause.includes(event.code)) {
+            if (event.repeat) return
+            useDriveStore.getState().togglePause()
+            event.preventDefault()
+            return
+          } else if (KEYS.recenter.includes(event.code)) {
+            orbit.yaw = 0
+            orbit.pitch = ORBIT.defaultPitch
+            orbit.distance = ORBIT.defaultDistance * cameraScale
+          } else if (KEYS.end.includes(event.code)) {
+            useDriveStore.getState().stop()
+            event.preventDefault()
+            return
+          } else {
+            return
+          }
           event.preventDefault()
-          return
+          useDriveStore.getState().update({ speedMult })
         }
-        if (KEYS.speedUp.includes(event.code)) {
-          speedMult = Math.min(SPEED_MAX, speedMult * SPEED_STEP)
-        } else if (KEYS.slowDown.includes(event.code)) {
-          speedMult = Math.max(SPEED_MIN, speedMult / SPEED_STEP)
-        } else if (KEYS.pause.includes(event.code)) {
-          if (event.repeat) return
-          useDriveStore.getState().togglePause()
-          event.preventDefault()
-          return
-        } else if (KEYS.recenter.includes(event.code)) {
+        window.addEventListener('keydown', chaseKeydown)
+
+        const totalKm =
+          traverse.profile[traverse.profile.length - 1]?.distance_km ?? 0
+        // Physical metres per simulated second, independent of route length.
+        let distanceM = initialT * totalKm * 1000
+        let velocityMps = 0
+        let lastFrame = performance.now()
+        let lastHudPush = 0
+        let lastT = initialT
+        // Suspension state: smoothed body height over the sampled terrain.
+        let bodyHeight = startGround
+        let verticalSpeed = 0
+        let tiltSmooth = 0
+        // Camera state: height rides its own slow spring (never the
+        // suspension), while horizontal position tracks the rover rigidly.
+        let cameraHeight = startGround
+        let cameraBearing = bearing
+        let eyeHeight = MARS.cartesianToCartographic(introPose.destination).height
+        let eyeOffset = eyeHeight - startGround
+
+        const updateChaseCamera = (sample: RouteSample, ground: number, dt: number) => {
+          cameraHeight += (ground - cameraHeight) * (1 - Math.exp(-CHASE.heightSpringPerS * dt))
+          // Follow the hill's baseline immediately, smoothing only small bumps.
+          // An absolute-height lag on a fast uphill traverse sends the lens
+          // above the rover when collision clearance catches up.
+          cameraHeight = Math.max(ground - 0.3, Math.min(ground + 0.3, cameraHeight))
+          cameraBearing += wrapPi(bearing - cameraBearing) * (1 - Math.exp(-CHASE.cameraHeadingPerS * dt))
+          cameraBearing = bearing + Math.max(-0.25, Math.min(0.25, wrapPi(cameraBearing - bearing)))
+          const anchor = Cartesian3.fromDegrees(sample.lon, sample.lat, cameraHeight, MARS)
+          viewer.camera.setView(orbitPose(
+            anchor,
+            // The lens targets its own stable frame, never the rover's
+            // suspension/contact position (including during a tumble).
+            aimPoint(anchor, cameraBearing),
+            cameraBearing,
+            orbit,
+            ground,
+            (desired, minimum) => {
+              const target = Math.max(desired, minimum + 0.35) - cameraHeight
+              eyeOffset += (target - eyeOffset) * (1 - Math.exp(-CHASE.eyeHeightPerS * dt))
+              // Headroom absorbs small bumps; a real obstacle still takes
+              // priority, with a damped descent once it is behind the camera.
+              eyeOffset = Math.max(eyeOffset, minimum - cameraHeight)
+              eyeHeight = cameraHeight + eyeOffset
+              return eyeHeight
+            },
+          ))
+        }
+
+        /** Shared cleanup for both natural completion and an Esc abort. */
+        const endDrive = (completion: 'arrived' | 'stopped' | 'risk-hold' = 'stopped') => {
+          surfaceCrew?.stop()
+          destroyScienceCrew()
+          scienceStop = null
+          scienceTargetSiteId = null
+          useScienceStore.getState().endScience()
+          wheelDust?.stop()
+          scoutFrame = 0
+          chaseActive = false
+          destroyChaseControls()
+          viewer.scene.screenSpaceCameraController.enableInputs = true
+          useDriveStore.getState().end()
+          useDriveStore.getState().update({ completion, missionPhase: completion === 'arrived' ? 'complete' : 'hold' })
+          // Keep the preview marker where the drive stopped. Syncing
+          // subscribedPreviewT stops the store subscription from treating
+          // this as a scrub event and flying the camera away.
+          subscribedPreviewT = lastT
+          const store = useAppStore.getState()
+          store.setPreviewT(lastT)
+          store.setRoutePhase('preview')
+          setPreviewMarkerVisible(true)
+        }
+
+        /**
+         * Leave the field stop: hide the crew in the SEV, restore the real
+         * destination and drive back onto the route.
+         */
+        const resumeRoute = () => {
+          if (token !== scoutToken) return
+          destroyScienceCrew()
+          scienceStop = null
+          scienceTargetSiteId = null
+          useScienceStore.getState().endScience()
+          destinationT = finalDestinationT
+          destinationSideM = 0
           orbit.yaw = 0
           orbit.pitch = ORBIT.defaultPitch
           orbit.distance = ORBIT.defaultDistance * cameraScale
-        } else if (KEYS.end.includes(event.code)) {
-          useDriveStore.getState().stop()
-          event.preventDefault()
-          return
-        } else {
-          return
-        }
-        event.preventDefault()
-        useDriveStore.getState().update({ speedMult })
-      }
-      window.addEventListener('keydown', chaseKeydown)
-
-      const totalKm =
-        traverse.profile[traverse.profile.length - 1]?.distance_km ?? 0
-      // Physical metres per simulated second, independent of route length.
-      let distanceM = initialT * totalKm * 1000
-      let velocityMps = 0
-      let lastFrame = performance.now()
-      let lastHudPush = 0
-      let lastT = initialT
-      // Suspension state: smoothed body height over the sampled terrain.
-      let bodyHeight = startGround
-      let verticalSpeed = 0
-      let tiltSmooth = 0
-      // Camera state: height rides its own slow spring (never the
-      // suspension), while horizontal position tracks the rover rigidly.
-      let cameraHeight = startGround
-      let cameraBearing = bearing
-      let eyeHeight = MARS.cartesianToCartographic(introPose.destination).height
-      let eyeOffset = eyeHeight - startGround
-
-      const updateChaseCamera = (sample: RouteSample, ground: number, dt: number) => {
-        cameraHeight += (ground - cameraHeight) * (1 - Math.exp(-CHASE.heightSpringPerS * dt))
-        // Follow the hill's baseline immediately, smoothing only small bumps.
-        // An absolute-height lag on a fast uphill traverse sends the lens
-        // above the rover when collision clearance catches up.
-        cameraHeight = Math.max(ground - 0.3, Math.min(ground + 0.3, cameraHeight))
-        cameraBearing += wrapPi(bearing - cameraBearing) * (1 - Math.exp(-CHASE.cameraHeadingPerS * dt))
-        cameraBearing = bearing + Math.max(-0.25, Math.min(0.25, wrapPi(cameraBearing - bearing)))
-        const anchor = Cartesian3.fromDegrees(sample.lon, sample.lat, cameraHeight, MARS)
-        viewer.camera.setView(orbitPose(
-          anchor,
-          // The lens targets its own stable frame, never the rover's
-          // suspension/contact position (including during a tumble).
-          aimPoint(anchor, cameraBearing),
-          cameraBearing,
-          orbit,
-          ground,
-          (desired, minimum) => {
-            const target = Math.max(desired, minimum + 0.35) - cameraHeight
-            eyeOffset += (target - eyeOffset) * (1 - Math.exp(-CHASE.eyeHeightPerS * dt))
-            // Headroom absorbs small bumps; a real obstacle still takes
-            // priority, with a damped descent once it is behind the camera.
-            eyeOffset = Math.max(eyeOffset, minimum - cameraHeight)
-            eyeHeight = cameraHeight + eyeOffset
-            return eyeHeight
-          },
-        ))
-      }
-
-      /** Shared cleanup for both natural completion and an Esc abort. */
-      const endDrive = (completion: 'arrived' | 'stopped' | 'risk-hold' = 'stopped') => {
-        surfaceCrew?.stop()
-        destroyScienceCrew()
-        scienceStop = null
-        scienceTargetSiteId = null
-        useScienceStore.getState().endScience()
-        wheelDust?.stop()
-        scoutFrame = 0
-        chaseActive = false
-        destroyChaseControls()
-        viewer.scene.screenSpaceCameraController.enableInputs = true
-        useDriveStore.getState().end()
-        useDriveStore.getState().update({ completion, missionPhase: completion === 'arrived' ? 'complete' : 'hold' })
-        // Keep the preview marker where the drive stopped. Syncing
-        // subscribedPreviewT stops the store subscription from treating
-        // this as a scrub event and flying the camera away.
-        subscribedPreviewT = lastT
-        const store = useAppStore.getState()
-        store.setPreviewT(lastT)
-        store.setRoutePhase('preview')
-        setPreviewMarkerVisible(true)
-      }
-
-      /**
-       * Leave the field stop: hide the crew in the SEV, restore the real
-       * destination and drive back onto the route.
-       */
-      const resumeRoute = () => {
-        if (token !== scoutToken) return
-        destroyScienceCrew()
-        scienceStop = null
-        scienceTargetSiteId = null
-        useScienceStore.getState().endScience()
-        destinationT = finalDestinationT
-        destinationSideM = 0
-        orbit.yaw = 0
-        orbit.pitch = ORBIT.defaultPitch
-        orbit.distance = ORBIT.defaultDistance * cameraScale
-        useDriveStore.getState().update({ missionPhase: 'aboard', loading: false, speedMps: 0, arriving: false, braking: false })
-        useScienceStore.getState().toast('success', 'Crew aboard · resuming the route')
-        chaseActive = true
-        const sample = sampleRoute(traverse, lastT)
-        const driveSample = Math.abs(lateralM) > 0.005 ? offsetRouteSample(sample, lateralM) : sample
-        const ground = groundAt(driveSample, corridor)
-        const anchor = Cartesian3.fromDegrees(driveSample.lon, driveSample.lat, ground, MARS)
-        let started = false
-        const begin = () => {
-          if (started || token !== scoutToken) return
-          started = true
-          lastFrame = performance.now()
-          scoutFrame = requestAnimationFrame(step)
-        }
-        viewer.camera.flyTo({
-          ...orbitPose(anchor, aimPoint(anchor, bearing), bearing, orbit, ground),
-          duration: 0.9,
-          complete: begin,
-          cancel: begin,
-        })
-      }
-
-      /** Park at an accepted science site, disembark and begin field work. */
-      const beginScienceStop = async (site: ScienceSite) => {
-        if (token !== scoutToken) return
-        const routeSample = sampleRoute(traverse, Math.min(1, site.alongKm / totalKm))
-        // The SEV is parked off-route; the crew must step out from the vehicle,
-        // not from the route centreline.
-        const parkSample = Math.abs(lateralM) > 0.005 ? offsetRouteSample(routeSample, lateralM) : routeSample
-        velocityMps = 0
-        wheelDust?.stop()
-        scienceTargetSiteId = null
-        scienceStop = { site, finalT: finalDestinationT, startedAt: new Date().toISOString() }
-        useDriveStore.getState().update({ missionPhase: 'science', loading: true, speedMps: 0, arriving: false, braking: false })
-        useScienceStore.getState().beginSite(site.id)
-        useScienceStore.getState().toast('info', `Crew disembarking · ${siteLabel(site)}`)
-        const siteGround = groundAt({ ...parkSample, lon: site.lon, lat: site.lat }, corridor)
-        const siteAnchor = Cartesian3.fromDegrees(site.lon, site.lat, siteGround, MARS)
-        const siteAim = Cartesian3.fromDegrees(site.lon, site.lat, siteGround + 0.9, MARS)
-        orbit.yaw = 0
-        orbit.pitch = 0.72
-        orbit.distance = Math.max(ORBIT.minDistance * cameraScale, 20)
-        scienceCameraHeading = parkSample.bearing
-        try {
-          const crew = await createScienceCrew(viewer, sample => groundAt(sample, corridor), () => token !== scoutToken)
-          if (token !== scoutToken || !crew) { crew?.destroy(); return }
-          scienceCrew = crew
-          if (import.meta.env.DEV) (globalThis as unknown as Record<string, unknown>).__astraScienceCrew = crew
-          crew.setWeather(weatherFx.rollForHeading(bearing), weatherFx.tint)
-          crew.spawn(parkSample, site, SCIENCE_META[site.kind].durationS)
-          useDriveStore.getState().update({ loading: false })
-          chaseActive = false
+          useDriveStore.getState().update({ missionPhase: 'aboard', loading: false, speedMps: 0, arriving: false, braking: false })
+          useScienceStore.getState().toast('success', 'Crew aboard · resuming the route')
+          chaseActive = true
+          const sample = sampleRoute(traverse, lastT)
+          const driveSample = Math.abs(lateralM) > 0.005 ? offsetRouteSample(sample, lateralM) : sample
+          const ground = groundAt(driveSample, corridor)
+          const anchor = Cartesian3.fromDegrees(driveSample.lon, driveSample.lat, ground, MARS)
+          let started = false
+          const begin = () => {
+            if (started || token !== scoutToken) return
+            started = true
+            lastFrame = performance.now()
+            scoutFrame = requestAnimationFrame(step)
+          }
           viewer.camera.flyTo({
-            ...orbitPose(siteAnchor, siteAim, scienceCameraHeading, orbit, siteGround),
-            duration: 1.1,
+            ...orbitPose(anchor, aimPoint(anchor, bearing), bearing, orbit, ground),
+            duration: 0.9,
+            complete: begin,
+            cancel: begin,
           })
-          scienceFramePrev = performance.now()
-          lastWorkPush = 0
-          let scienceCameraSettleAt = performance.now() + 1100
-          let viewSiteId = site.id
+        }
 
-          const scienceStep = (now: number) => {
-            if (token !== scoutToken || !scienceCrew || !scienceStop) return
-            const controls = useDriveStore.getState()
-            if (controls.stopRequested) {
-              destroyScienceCrew()
-              scienceStop = null
-              scienceTargetSiteId = null
-              useScienceStore.getState().endScience()
-              endDrive()
-              return
-            }
-            const dt = document.hidden || controls.paused ? 0 : Math.min(0.1, Math.max(0.001, (now - scienceFramePrev) / 1000))
-            scienceFramePrev = now
-            const science = useScienceStore.getState()
-            const currentSite = science.sites.find(candidate => candidate.id === science.activeSiteId) ?? scienceStop.site
+        /** Park at an accepted science site, disembark and begin field work. */
+        const beginScienceStop = async (site: ScienceSite) => {
+          if (token !== scoutToken) return
+          const routeSample = sampleRoute(traverse, Math.min(1, site.alongKm / totalKm))
+          // The SEV is parked off-route; the crew must step out from the vehicle,
+          // not from the route centreline.
+          const parkSample = Math.abs(lateralM) > 0.005 ? offsetRouteSample(routeSample, lateralM) : routeSample
+          velocityMps = 0
+          wheelDust?.stop()
+          scienceTargetSiteId = null
+          scienceStop = { site, finalT: finalDestinationT, startedAt: new Date().toISOString() }
+          useDriveStore.getState().update({ missionPhase: 'science', loading: true, speedMps: 0, arriving: false, braking: false })
+          useScienceStore.getState().beginSite(site.id)
+          useScienceStore.getState().toast('info', `Crew disembarking · ${siteLabel(site)}`)
+          const siteGround = groundAt({ ...parkSample, lon: site.lon, lat: site.lat }, corridor)
+          const siteAnchor = Cartesian3.fromDegrees(site.lon, site.lat, siteGround, MARS)
+          const siteAim = Cartesian3.fromDegrees(site.lon, site.lat, siteGround + 0.9, MARS)
+          orbit.yaw = 0
+          orbit.pitch = 0.72
+          orbit.distance = Math.max(ORBIT.minDistance * cameraScale, 20)
+          scienceCameraHeading = parkSample.bearing
+          try {
+            const crew = await createScienceCrew(viewer, sample => groundAt(sample, corridor), () => token !== scoutToken)
+            if (token !== scoutToken || !crew) { crew?.destroy(); return }
+            scienceCrew = crew
+            if (import.meta.env.DEV) (globalThis as unknown as Record<string, unknown>).__astraScienceCrew = crew
+            crew.setWeather(weatherFx.rollForHeading(bearing), weatherFx.tint)
+            crew.spawn(parkSample, site, SCIENCE_META[site.kind].durationS)
+            useDriveStore.getState().update({ loading: false })
+            chaseActive = false
+            viewer.camera.flyTo({
+              ...orbitPose(siteAnchor, siteAim, scienceCameraHeading, orbit, siteGround),
+              duration: 1.1,
+            })
+            scienceFramePrev = performance.now()
+            lastWorkPush = 0
+            let scienceCameraSettleAt = performance.now() + 1100
+            let viewSiteId = site.id
 
-            // The user can send the crew to another nearby target after the
-            // current spot is finished. The SEV stays parked.
-            if (science.moveRequestId) {
-              const requestId = science.moveRequestId
-              science.consumeMove()
-              const next = science.sites.find(candidate => candidate.id === requestId)
-              if (next && science.phase === 'done' && distanceMeters(currentSite, next) <= SCIENCE_NEARBY_M) {
-                scienceCrew.travelTo(next, SCIENCE_META[next.kind].durationS)
-                scienceStop.startedAt = new Date().toISOString()
-                scienceCameraHeading = sampleRoute(traverse, Math.min(1, next.alongKm / totalKm)).bearing
-                useScienceStore.getState().travelToSite(next.id)
-                useScienceStore.getState().toast('info', `Crew moving to ${siteLabel(next)}`)
-              } else {
-                useScienceStore.getState().toast('warn', `Only science sites within ${SCIENCE_NEARBY_M} m can be reached on foot.`)
+            const scienceStep = (now: number) => {
+              if (token !== scoutToken || !scienceCrew || !scienceStop) return
+              const controls = useDriveStore.getState()
+              if (controls.stopRequested) {
+                destroyScienceCrew()
+                scienceStop = null
+                scienceTargetSiteId = null
+                useScienceStore.getState().endScience()
+                endDrive()
+                return
               }
-            }
+              const dt = document.hidden || controls.paused ? 0 : Math.min(0.1, Math.max(0.001, (now - scienceFramePrev) / 1000))
+              scienceFramePrev = now
+              const science = useScienceStore.getState()
+              const currentSite = science.sites.find(candidate => candidate.id === science.activeSiteId) ?? scienceStop.site
 
-            if (useScienceStore.getState().phase === 'boarding') scienceCrew.board()
-            scienceCrew.setWeather(weatherFx.rollForHeading(bearing), weatherFx.tint)
-            scienceCrew.update(dt)
+              // The user can send the crew to another nearby target after the
+              // current spot is finished. The SEV stays parked.
+              if (science.moveRequestId) {
+                const requestId = science.moveRequestId
+                science.consumeMove()
+                const next = science.sites.find(candidate => candidate.id === requestId)
+                if (next && science.phase === 'done' && distanceMeters(currentSite, next) <= SCIENCE_NEARBY_M) {
+                  scienceCrew.travelTo(next, SCIENCE_META[next.kind].durationS)
+                  scienceStop.startedAt = new Date().toISOString()
+                  scienceCameraHeading = sampleRoute(traverse, Math.min(1, next.alongKm / totalKm)).bearing
+                  useScienceStore.getState().travelToSite(next.id)
+                  useScienceStore.getState().toast('info', `Crew moving to ${siteLabel(next)}`)
+                } else {
+                  useScienceStore.getState().toast('warn', `Only science sites within ${SCIENCE_NEARBY_M} m can be reached on foot.`)
+                }
+              }
 
-            const active = useScienceStore.getState()
-            const viewSite = active.sites.find(candidate => candidate.id === active.activeSiteId) ?? scienceStop.site
-            const viewSample = sampleRoute(traverse, Math.min(1, viewSite.alongKm / totalKm))
-            const viewGround = groundAt({ ...viewSample, lon: viewSite.lon, lat: viewSite.lat }, corridor)
-            const viewAnchor = Cartesian3.fromDegrees(viewSite.lon, viewSite.lat, viewGround, MARS)
-            const viewPose = orbitPose(
-              viewAnchor,
-              Cartesian3.fromDegrees(viewSite.lon, viewSite.lat, viewGround + 0.9, MARS),
-              scienceCameraHeading,
-              orbit,
-              viewGround,
-            )
-            if (viewSite.id !== viewSiteId) {
-              viewSiteId = viewSite.id
-              scienceCameraHeading = viewSample.bearing
-              viewer.camera.flyTo({ ...viewPose, duration: 0.8 })
-              scienceCameraSettleAt = now + 800
-            } else if (now > scienceCameraSettleAt) {
-              viewer.camera.setView(viewPose)
-            }
+              if (useScienceStore.getState().phase === 'boarding') scienceCrew.board()
+              scienceCrew.setWeather(weatherFx.rollForHeading(bearing), weatherFx.tint)
+              scienceCrew.update(dt)
 
-            if (scienceCrew.mode === 'travel' && active.phase === 'disembarking') {
-              useScienceStore.getState().setPhase('travelling')
-            }
-            if (scienceCrew.mode === 'work' && active.phase === 'travelling') {
-              const duration = SCIENCE_META[viewSite.kind].durationS
-              useScienceStore.getState().setPhase('working')
-              useScienceStore.getState().setWork(0, duration)
-              useScienceStore.getState().toast('info', `Crew working · ${siteLabel(viewSite)} (${duration.toFixed(0)} s)`)
-            }
-            if (scienceCrew.mode === 'work' && active.phase === 'working' && now - lastWorkPush > 100) {
-              lastWorkPush = now
-              const duration = SCIENCE_META[viewSite.kind].durationS
-              useScienceStore.getState().setWork(scienceCrew.workProgress * duration, duration)
-            }
-            if (scienceCrew.mode === 'done' && active.phase === 'working') {
-              const duration = SCIENCE_META[viewSite.kind].durationS
-              useScienceStore.getState().finishSite(viewSite, scienceStop.startedAt, duration)
-              useScienceStore.getState().setWork(duration, duration)
-              const result = useScienceStore.getState().logs.at(-1)?.result
-              useScienceStore.getState().toast('success', `Experiment complete · ${viewSite.region}: ${result?.headline ?? 'data logged'}`)
-            }
-            if (scienceCrew.mode === 'off' && active.phase === 'boarding') {
-              resumeRoute()
-              return
+              const active = useScienceStore.getState()
+              const viewSite = active.sites.find(candidate => candidate.id === active.activeSiteId) ?? scienceStop.site
+              const viewSample = sampleRoute(traverse, Math.min(1, viewSite.alongKm / totalKm))
+              const viewGround = groundAt({ ...viewSample, lon: viewSite.lon, lat: viewSite.lat }, corridor)
+              const viewAnchor = Cartesian3.fromDegrees(viewSite.lon, viewSite.lat, viewGround, MARS)
+              const viewPose = orbitPose(
+                viewAnchor,
+                Cartesian3.fromDegrees(viewSite.lon, viewSite.lat, viewGround + 0.9, MARS),
+                scienceCameraHeading,
+                orbit,
+                viewGround,
+              )
+              if (viewSite.id !== viewSiteId) {
+                viewSiteId = viewSite.id
+                scienceCameraHeading = viewSample.bearing
+                viewer.camera.flyTo({ ...viewPose, duration: 0.8 })
+                scienceCameraSettleAt = now + 800
+              } else if (now > scienceCameraSettleAt) {
+                viewer.camera.setView(viewPose)
+              }
+
+              if (scienceCrew.mode === 'travel' && active.phase === 'disembarking') {
+                useScienceStore.getState().setPhase('travelling')
+              }
+              if (scienceCrew.mode === 'work' && active.phase === 'travelling') {
+                const duration = SCIENCE_META[viewSite.kind].durationS
+                useScienceStore.getState().setPhase('working')
+                useScienceStore.getState().setWork(0, duration)
+                useScienceStore.getState().toast('info', `Crew working · ${siteLabel(viewSite)} (${duration.toFixed(0)} s)`)
+              }
+              if (scienceCrew.mode === 'work' && active.phase === 'working' && now - lastWorkPush > 100) {
+                lastWorkPush = now
+                const duration = SCIENCE_META[viewSite.kind].durationS
+                useScienceStore.getState().setWork(scienceCrew.workProgress * duration, duration)
+              }
+              if (scienceCrew.mode === 'done' && active.phase === 'working') {
+                const duration = SCIENCE_META[viewSite.kind].durationS
+                useScienceStore.getState().finishSite(viewSite, scienceStop.startedAt, duration)
+                useScienceStore.getState().setWork(duration, duration)
+                const result = useScienceStore.getState().logs.at(-1)?.result
+                useScienceStore.getState().toast('success', `Experiment complete · ${viewSite.region}: ${result?.headline ?? 'data logged'}`)
+              }
+              if (scienceCrew.mode === 'off' && active.phase === 'boarding') {
+                resumeRoute()
+                return
+              }
+              scoutFrame = requestAnimationFrame(scienceStep)
             }
             scoutFrame = requestAnimationFrame(scienceStep)
+          } catch (error) {
+            if (token !== scoutToken) return
+            console.error('Science crew model loading failed', error)
+            useScienceStore.getState().toast('warn', 'Crew models could not load; resuming the route.')
+            scienceStop = null
+            useScienceStore.getState().endScience()
+            useDriveStore.getState().update({ loading: false, missionPhase: 'aboard' })
+            destinationT = finalDestinationT
+            destinationSideM = 0
+            lastFrame = performance.now()
+            scoutFrame = requestAnimationFrame(step)
           }
-          scoutFrame = requestAnimationFrame(scienceStep)
-        } catch (error) {
-          if (token !== scoutToken) return
-          console.error('Science crew model loading failed', error)
-          useScienceStore.getState().toast('warn', 'Crew models could not load; resuming the route.')
-          scienceStop = null
-          useScienceStore.getState().endScience()
-          useDriveStore.getState().update({ loading: false, missionPhase: 'aboard' })
-          destinationT = finalDestinationT
-          destinationSideM = 0
-          lastFrame = performance.now()
-          scoutFrame = requestAnimationFrame(step)
         }
-      }
 
-      const handoff = async () => {
-        wheelDust?.stop()
-        useDriveStore.getState().update({ missionPhase: 'disembarking', loading: true, speedMps: 0, arriving: false })
-        try {
-          const crew = await createSurfaceCrew(viewer, traverse, plan.stagingT,
-            sample => groundAt(sample, corridor), () => token !== scoutToken)
-          if (token !== scoutToken || !crew) { crew?.destroy(); return }
-          surfaceCrew = crew
-          if (import.meta.env.DEV) (globalThis as unknown as Record<string, unknown>).__astraCrew = crew
-        } catch (error) {
-          if (token !== scoutToken) return
-          console.error('Crew model loading failed', error)
-          useDriveStore.getState().update({ crewMessage: 'Crew models could not load. Mission held at staging; retry to reload.' })
-          endDrive('risk-hold')
-          return
-        }
-        useDriveStore.getState().update({ loading: false })
-        let previous = performance.now()
-        const crewStep = (now: number) => {
-          if (token !== scoutToken || !surfaceCrew) return
-          const controls = useDriveStore.getState()
-          const dt = document.hidden || controls.paused ? 0 : Math.min(0.1, (now - previous) / 1000) * controls.speedMult
-          previous = now
-          if (controls.stopRequested) { endDrive(); return }
-          if (controls.jumpRequested) { surfaceCrew.jump(); useDriveStore.setState({ jumpRequested: false }) }
-          // The crew walks at the assumed pace. The suit/equipment allowance is
-          // a planning-time factor for the EVA estimate, not a walking-speed cut.
-          const pace = route.crew_estimate?.profile?.pace_m_s ?? 0.5
-          surfaceCrew.setWeather(weatherFx.rollForHeading(bearing), weatherFx.tint)
-          surfaceCrew.update(dt, pace)
-          if (surfaceCrew.mode === 'hold') {
-            if (assignment.vehicle === 'rover') {
-              // Preserve the parked carrier and three crew members during rover launch.
-              parkedSev = scoutModel
-              scoutModel = null
-              void startScout(route, plan.stagingT)
-              return
-            }
-            surfaceCrew.walk()
-            useDriveStore.getState().update({ missionPhase: 'crew-approach' })
-          }
-          lastT = surfaceCrew.fraction
-          const sample = sampleRoute(traverse, lastT)
-          const ground = groundAt(sample, corridor)
-          weatherFx.setAnchor(Cartesian3.fromDegrees(sample.lon, sample.lat, ground, MARS))
-          // Stop the final approach if newly rendered terrain exceeds the crew limit.
-          const ahead = sampleRoute(traverse, Math.min(1, lastT + 0.001 / Math.max(totalKm, 0.001)))
-          const grade = Math.abs(CesiumMath.toDegrees(Math.atan2(groundAt(ahead, corridor) - ground,
-            Math.max(0.01, (ahead.distanceKm - sample.distanceKm) * 1000))))
-          if (surfaceCrew.mode === 'walk' && (Math.abs(sample.gradeDeg) > route.slope_limit_deg || grade > route.slope_limit_deg)) {
-            useDriveStore.getState().update({ crewMessage: 'Crew held: final-approach grade exceeds the mission limit.' })
+        const handoff = async () => {
+          wheelDust?.stop()
+          useDriveStore.getState().update({ missionPhase: 'disembarking', loading: true, speedMps: 0, arriving: false })
+          try {
+            const crew = await createSurfaceCrew(viewer, traverse, plan.stagingT,
+              sample => groundAt(sample, corridor), () => token !== scoutToken)
+            if (token !== scoutToken || !crew) { crew?.destroy(); return }
+            surfaceCrew = crew
+            if (import.meta.env.DEV) (globalThis as unknown as Record<string, unknown>).__astraCrew = crew
+          } catch (error) {
+            if (token !== scoutToken) return
+            console.error('Crew model loading failed', error)
+            useDriveStore.getState().update({ crewMessage: 'Crew models could not load. Mission held at staging; retry to reload.' })
             endDrive('risk-hold')
             return
           }
-          bearing = sample.bearing
-          updateChaseCamera(sample, ground, Math.max(0.001, dt))
-          useDriveStore.getState().update({ distanceKm: sample.distanceKm, speedMps: controls.paused ? 0 : surfaceCrew.mode === 'walk' ? surfaceCrew.speedMps : 0, timeScale: 1 })
-          useAppStore.getState().setPreviewT(lastT)
-          if (surfaceCrew.mode === 'complete') { endDrive('arrived'); return }
+          useDriveStore.getState().update({ loading: false })
+          let previous = performance.now()
+          const crewStep = (now: number) => {
+            if (token !== scoutToken || !surfaceCrew) return
+            const controls = useDriveStore.getState()
+            const dt = document.hidden || controls.paused ? 0 : Math.min(0.1, (now - previous) / 1000) * controls.speedMult
+            previous = now
+            if (controls.stopRequested) { endDrive(); return }
+            if (controls.jumpRequested) { surfaceCrew.jump(); useDriveStore.setState({ jumpRequested: false }) }
+            // The crew walks at the assumed pace. The suit/equipment allowance is
+            // a planning-time factor for the EVA estimate, not a walking-speed cut.
+            const pace = route.crew_estimate?.profile?.pace_m_s ?? 0.5
+            surfaceCrew.setWeather(weatherFx.rollForHeading(bearing), weatherFx.tint)
+            surfaceCrew.update(dt, pace)
+            if (surfaceCrew.mode === 'hold') {
+              if (assignment.vehicle === 'rover') {
+                // Preserve the parked carrier and three crew members during rover launch.
+                parkedSev = scoutModel
+                scoutModel = null
+                void startScout(route, plan.stagingT)
+                return
+              }
+              surfaceCrew.walk()
+              useDriveStore.getState().update({ missionPhase: 'crew-approach' })
+            }
+            lastT = surfaceCrew.fraction
+            const sample = sampleRoute(traverse, lastT)
+            const ground = groundAt(sample, corridor)
+            weatherFx.setAnchor(Cartesian3.fromDegrees(sample.lon, sample.lat, ground, MARS))
+            // Stop the final approach if newly rendered terrain exceeds the crew limit.
+            const ahead = sampleRoute(traverse, Math.min(1, lastT + 0.001 / Math.max(totalKm, 0.001)))
+            const grade = Math.abs(CesiumMath.toDegrees(Math.atan2(groundAt(ahead, corridor) - ground,
+              Math.max(0.01, (ahead.distanceKm - sample.distanceKm) * 1000))))
+            if (surfaceCrew.mode === 'walk' && (Math.abs(sample.gradeDeg) > route.slope_limit_deg || grade > route.slope_limit_deg)) {
+              useDriveStore.getState().update({ crewMessage: 'Crew held: final-approach grade exceeds the mission limit.' })
+              endDrive('risk-hold')
+              return
+            }
+            bearing = sample.bearing
+            updateChaseCamera(sample, ground, Math.max(0.001, dt))
+            useDriveStore.getState().update({ distanceKm: sample.distanceKm, speedMps: controls.paused ? 0 : surfaceCrew.mode === 'walk' ? surfaceCrew.speedMps : 0, timeScale: 1 })
+            useAppStore.getState().setPreviewT(lastT)
+            if (surfaceCrew.mode === 'complete') { endDrive('arrived'); return }
+            scoutFrame = requestAnimationFrame(crewStep)
+          }
           scoutFrame = requestAnimationFrame(crewStep)
         }
-        scoutFrame = requestAnimationFrame(crewStep)
-      }
 
-      useDriveStore.getState().update({
-        loading: false,
-        totalKm,
-        distanceKm: startSample.distanceKm,
-        limitDeg: route.slope_limit_deg,
-      })
-
-      // ---- Crash simulation (genuine cliffs only) ----
-      // The crewed SEV halts when the live grade passes the mission slope
-      // envelope (max(12°, limit + 0.25°), matching the backend danger
-      // classification). The auto-deployed rover does not topple on a bare
-      // over-limit grade; it only falls when it reaches a genuine cliff — a
-      // planner-classified cliff zone or terrain that has become cliff-steep
-      // (>= 35°). It then tumbles downhill with decaying bounces and arcs
-      // electrically. Thresholds are calibrated to real MOLA grades (the
-      // steepest Mars terrain reaches ~25° at MOLA resolution); the sparks are
-      // a dramatization.
-      const rolloverGradeDeg = Math.max(
-        CRASH.minRolloverGradeDeg,
-        route.slope_limit_deg + CRASH.gradeOverLimitDeg,
-      )
-      type CrashState = {
-        type: 'rollover' | 'fall' | 'jet'
-        detail: string
-        origin: RouteSample
-        body: CrashBody
-        arcing: boolean
-        wreckTime: number
-      }
-      let crash: CrashState | null = null
-
-      const beginCrash = (type: 'rollover' | 'fall' | 'jet', sample: RouteSample) => {
-        scoutGrounded = false
-        wheelDust?.stop()
-        if (type === 'jet') wheelDust?.jet(Cartesian3.fromDegrees(sample.lon, sample.lat, groundAt(sample, corridor), MARS))
-        const absGrade = Math.abs(sample.gradeDeg)
-        const probe = (offset: number) => groundAt({ ...sample,
-          lon: sample.lon + Math.sin(bearing) * offset / (METERS_PER_DEG * Math.max(0.1, Math.cos(sample.lat * Math.PI / 180))),
-          lat: sample.lat + Math.cos(bearing) * offset / METERS_PER_DEG,
-          distanceKm: sample.distanceKm + offset / 1000,
-        }, corridor)
-        const localRise = probe(2) - probe(-2)
-        const downhill = (Math.abs(localRise) > 0.01 ? localRise : sample.gradeDeg) < 0 ? 1 : -1
-        const initialPitch = -Math.atan2(localRise, 4)
-        const detail =
-          type === 'jet'
-            ? 'Training-only CO₂ jet impulse: Mars-gravity flight and inelastic landing. No jet is observed at this route location.'
-            : type === 'fall'
-            ? `Fell at km ${sample.distanceKm.toFixed(1)} — ${absGrade.toFixed(0)}° cliff drop; impact and electrical discharge.`
-            : `Rollover at km ${sample.distanceKm.toFixed(1)} — ${absGrade.toFixed(0)}° grade exceeded the mission slope envelope.`
-        crash = {
-          type,
-          detail,
-          origin: sample,
-          body: { x: 0, z: terrainSupport(0, initialPitch, probe) + 0.03,
-            vx: type === 'jet' ? velocityMps : downhill * 0.8,
-            vz: type === 'jet' ? 7.5 : 0,
-            pitch: initialPitch, spin: type === 'jet' ? 0.8 : downhill * 4,
-            elapsed: 0, settledFor: 0, impacts: 0 },
-          arcing: false,
-          wreckTime: 0,
-        }
-        const store = useDriveStore.getState()
-        store.update({ paused: false, braking: false, speedMps: 0 })
-        store.crashed({
-          type,
-          detail,
-          distanceKm: sample.distanceKm,
-          gradeDeg: sample.gradeDeg,
+        useDriveStore.getState().update({
+          loading: false,
+          totalKm,
+          distanceKm: startSample.distanceKm,
+          limitDeg: route.slope_limit_deg,
         })
-      }
 
-      /** Animate the crash; returns false when the drive has ended. */
-      const stepCrash = (dt: number): boolean => {
-        const state = crash
-        if (!state) return false
-        const atOffset = (x: number): RouteSample => ({ ...state.origin,
-          lon: state.origin.lon + Math.sin(bearing) * x / (METERS_PER_DEG * Math.max(0.1, Math.cos(state.origin.lat * Math.PI / 180))),
-          lat: state.origin.lat + Math.cos(bearing) * x / METERS_PER_DEG,
-          distanceKm: state.origin.distanceKm + x / 1000,
-        })
-        advanceCrash(state.body, dt, x => groundAt(atOffset(x), corridor))
-        const sample = atOffset(state.body.x)
-        const ground = groundAt(sample, corridor)
-        const position = Cartesian3.fromDegrees(
-          sample.lon,
-          sample.lat,
-          state.body.z,
-          MARS,
+        // ---- Crash simulation (genuine cliffs only) ----
+        // The crewed SEV halts when the live grade passes the mission slope
+        // envelope (max(12°, limit + 0.25°), matching the backend danger
+        // classification). The auto-deployed rover does not topple on a bare
+        // over-limit grade; it only falls when it reaches a genuine cliff — a
+        // planner-classified cliff zone or terrain that has become cliff-steep
+        // (>= 35°). It then tumbles downhill with decaying bounces and arcs
+        // electrically. Thresholds are calibrated to real MOLA grades (the
+        // steepest Mars terrain reaches ~25° at MOLA resolution); the sparks are
+        // a dramatization.
+        const rolloverGradeDeg = Math.max(
+          CRASH.minRolloverGradeDeg,
+          route.slope_limit_deg + CRASH.gradeOverLimitDeg,
         )
-        if (scoutModel) {
-          // Rotate about the body centre, not the wheel-plane origin.
-          const matrix = roverMatrix(
-            position,
-            bearing,
-            Cartesian3.UNIT_Z,
-            state.body.pitch,
-            0,
-          )
-          scoutModel.modelMatrix = Matrix4.multiplyByTranslation(matrix, new Cartesian3(0, 0, -1), new Matrix4())
-          applyWeatherTint(scoutModel)
+        type CrashState = {
+          type: 'rollover' | 'fall' | 'jet'
+          detail: string
+          origin: RouteSample
+          body: CrashBody
+          arcing: boolean
+          wreckTime: number
         }
-        weatherFx.setAnchor(position)
-        roverViewRef.current = { position, heading: bearing, terrainProvider }
-        const scout = viewer.entities.getById('astra-scout')
-        if (scout) scout.position = new ConstantPositionProperty(position)
+        let crash: CrashState | null = null
 
-        if (chaseActive) {
-          if (!orbit.dragging) {
-            orbit.yaw *= Math.exp(-ORBIT.recenterPerS * dt)
+        const beginCrash = (type: 'rollover' | 'fall' | 'jet', sample: RouteSample) => {
+          scoutGrounded = false
+          wheelDust?.stop()
+          if (type === 'jet') wheelDust?.jet(Cartesian3.fromDegrees(sample.lon, sample.lat, groundAt(sample, corridor), MARS))
+          const absGrade = Math.abs(sample.gradeDeg)
+          const probe = (offset: number) => groundAt({ ...sample,
+            lon: sample.lon + Math.sin(bearing) * offset / (METERS_PER_DEG * Math.max(0.1, Math.cos(sample.lat * Math.PI / 180))),
+            lat: sample.lat + Math.cos(bearing) * offset / METERS_PER_DEG,
+            distanceKm: sample.distanceKm + offset / 1000,
+          }, corridor)
+          const localRise = probe(2) - probe(-2)
+          const downhill = (Math.abs(localRise) > 0.01 ? localRise : sample.gradeDeg) < 0 ? 1 : -1
+          const initialPitch = -Math.atan2(localRise, 4)
+          const detail =
+            type === 'jet'
+              ? 'Training-only CO₂ jet impulse: Mars-gravity flight and inelastic landing. No jet is observed at this route location.'
+              : type === 'fall'
+              ? `Fell at km ${sample.distanceKm.toFixed(1)} — ${absGrade.toFixed(0)}° cliff drop; impact and electrical discharge.`
+              : `Rollover at km ${sample.distanceKm.toFixed(1)} — ${absGrade.toFixed(0)}° grade exceeded the mission slope envelope.`
+          crash = {
+            type,
+            detail,
+            origin: sample,
+            body: { x: 0, z: terrainSupport(0, initialPitch, probe) + 0.03,
+              vx: type === 'jet' ? velocityMps : downhill * 0.8,
+              vz: type === 'jet' ? 7.5 : 0,
+              pitch: initialPitch, spin: type === 'jet' ? 0.8 : downhill * 4,
+              elapsed: 0, settledFor: 0, impacts: 0 },
+            arcing: false,
+            wreckTime: 0,
           }
-          updateChaseCamera(sample, Math.max(ground, state.body.z - bodySupport(state.body.pitch)), dt)
-        }
-
-        if (
-          !state.arcing &&
-          state.body.settledFor >= 0.8
-        ) {
-          state.arcing = true
-          state.wreckTime = state.body.elapsed
-          spawnSparks(position)
-          useDriveStore.getState().update({ distanceKm: sample.distanceKm })
-        }
-        if (
-          state.arcing &&
-          state.body.elapsed - state.wreckTime >= CRASH.holdAfterCrashMs / 1000
-        ) {
-          endDrive()
-          // Recover onto the safe route when the wreck was on the
-          // hazardous comparison, so the safety story lands.
-          const store = useAppStore.getState()
-          if (store.routeChoice !== 'safe' && route.hazardous) {
-            store.setRouteChoice('safe')
-          }
-          return false
-        }
-        return true
-      }
-
-      const step = (now: number) => {
-        if (token !== scoutToken) return
-        if (crash && useDriveStore.getState().stopRequested) {
-          endDrive()
-          return
-        }
-        const wallDt = document.hidden ? 0 : Math.min(1, Math.max(0, (now - lastFrame) / 1000))
-        const dt = Math.min(0.1, Math.max(0.001, wallDt))
-        lastFrame = now
-        if (crash) {
-          if (stepCrash(dt)) scoutFrame = requestAnimationFrame(step)
-          return
-        }
-        const controls = useDriveStore.getState()
-        paused = controls.paused
-        speedMult = controls.speedMult
-        // Consume an accepted science detour: retarget the SEV to the off-route
-        // parking point and remember the real destination for the resume.
-        const scienceNow = useScienceStore.getState()
-        if (scienceNow.detourSiteId) {
-          const site = scienceNow.sites.find(candidate => candidate.id === scienceNow.detourSiteId)
-          scienceNow.consumeDetour()
-          if (site && site.safety !== 'unsafe' && site.alongKm / totalKm > lastT + 0.0005) {
-            destinationT = Math.min(finalDestinationT, site.alongKm / totalKm)
-            destinationSideM = site.parkSideM
-            scienceTargetSiteId = site.id
-            useScienceStore.getState().toast('info', `Detour accepted · ${siteLabel(site)}`)
-          } else {
-            useScienceStore.getState().cancelDetour()
-            useScienceStore.getState().toast('warn', 'That science site is no longer ahead of the vehicle.')
-          }
-        }
-        const timeScale = controls.travelMode === 'preview'
-          ? Math.max(1, totalKm * 1000 / (90 * SCOUT_CRUISE_MPS))
-          : 1
-        const wantsHalt = paused || controls.stopRequested
-        // Presentation dynamics stay bounded even for a long traverse preview.
-        const suspensionDt = wantsHalt && velocityMps === 0 ? 0 : dt * speedMult
-        const ahead = sampleRoute(traverse, Math.min(1, lastT + 0.005 / Math.max(totalKm, 0.005)))
-        const here = sampleRoute(traverse, lastT)
-        const probeDistanceM = Math.max(0.01, (ahead.distanceKm - here.distanceKm) * 1000)
-        const localGrade = CesiumMath.toDegrees(Math.atan2(
-          groundAt(ahead, corridor) - groundAt(here, corridor), probeDistanceM,
-        ))
-        const gradeFactor = 1 / (1 + Math.max(Math.abs(ahead.gradeDeg), Math.abs(localGrade)) / 8)
-        const turn = Math.abs(wrapPi(ahead.bearing - bearing))
-        const alongRemainingM = Math.max(0, destinationT * totalKm * 1000 - distanceM)
-        const remainingM = alongRemainingM + Math.abs(destinationSideM - lateralM)
-        const targetSpeed = wantsHalt ? 0 : Math.min(
-          SCOUT_CRUISE_MPS * gradeFactor / (1 + turn * 3),
-          arrivalSpeedLimit(remainingM, timeScale * speedMult, velocityMps, wallDt),
-        )
-        const motion = advanceDrive(velocityMps, targetSpeed, wallDt)
-        velocityMps = motion.speed
-        distanceM = Math.min(destinationT * totalKm * 1000, distanceM + motion.distance * timeScale * speedMult)
-        if (!wantsHalt && alongRemainingM < 0.01) distanceM = destinationT * totalKm * 1000
-        const braking = wantsHalt && velocityMps > 0
-        if (braking !== controls.braking) useDriveStore.getState().update({ braking })
-        const t = totalKm > 0 ? distanceM / (totalKm * 1000) : 1
-        lastT = t
-        const sample = sampleRoute(traverse, t)
-        // Sidle off the route into the parking point as the SEV nears a science
-        // detour; back on the route, the same spring returns it to the centre.
-        const targetAlongM = destinationT * totalKm * 1000
-        if (Math.abs(destinationSideM) > 0.01) {
-          const desired = destinationSideM * Math.max(0, Math.min(1, (distanceM - (targetAlongM - 45)) / 45))
-          lateralM += (desired - lateralM) * (1 - Math.exp(-3 * dt))
-          if (Math.abs(lateralM) < 0.01) lateralM = 0
-        } else if (lateralM !== 0) {
-          lateralM *= Math.exp(-2.5 * dt)
-          if (Math.abs(lateralM) < 0.01) lateralM = 0
-        }
-        const driveSample = Math.abs(lateralM) > 0.005 ? offsetRouteSample(sample, lateralM) : sample
-        const ground = groundAt(driveSample, corridor)
-        // Suggest a detour while the vehicle is still approaching an unvisited,
-        // crew-safe site. It disappears by itself once the site is passed, and
-        // an explicit "Keep driving" mutes that site until it is behind us.
-        // Preview compresses a whole traverse into ~90 s, so a fixed 260 m
-        // window can slide past in a fraction of a second. Scale the window
-        // with the effective ground speed to keep a usable reaction time; the
-        // 260 m floor preserves the short-lead behaviour in real time.
-        const effectiveSpeedMps = SCOUT_CRUISE_MPS * timeScale * speedMult
-        const promptLeadM = Math.max(260, effectiveSpeedMps * 7)
-        if (now - lastSciencePromptCheck > 250) {
-          lastSciencePromptCheck = now
-          const science = useScienceStore.getState()
-          if (science.phase === 'off' && !scienceTargetSiteId) {
-            const logged = new Set(science.logs.map(entry => entry.siteId))
-            if (science.promptSiteId !== lastPromptId) {
-              if (!science.promptSiteId && lastPromptId) {
-                const dismissed = science.sites.find(candidate => candidate.id === lastPromptId)
-                if (dismissed && dismissed.alongKm * 1000 > distanceM + 25 && !logged.has(dismissed.id)) {
-                  mutedPromptId = dismissed.id
-                  promptCooldownUntil = now + 6000
-                }
-              }
-              lastPromptId = science.promptSiteId
-            }
-            if (science.promptSiteId) {
-              const prompted = science.sites.find(candidate => candidate.id === science.promptSiteId)
-              const thereM = prompted ? prompted.alongKm * 1000 : 0
-              if (!prompted || distanceM > thereM + 50 || thereM - distanceM > promptLeadM) science.dismissPrompt()
-            } else if (now >= promptCooldownUntil) {
-              const next = science.sites.find(candidate =>
-                candidate.id !== mutedPromptId &&
-                candidate.safety !== 'unsafe' &&
-                !logged.has(candidate.id) &&
-                candidate.alongKm * 1000 > distanceM + 25 &&
-                candidate.alongKm * 1000 - distanceM <= promptLeadM)
-              if (next) science.prompt(next.id)
-            }
-          }
-        }
-        if (controls.jetRequested && vehicle === 'rover') {
-          beginCrash('jet', sample)
-          scoutFrame = requestAnimationFrame(step)
-          return
-        }
-
-        driveSurface?.update(distanceM, now)
-
-        // Suspension affects attitude; the wheel envelope stays grounded.
-        const previousVerticalSpeed = verticalSpeed
-        // Fixed-size spring integration gives the same suspension response
-        // at different frame rates and playback speeds. Downward free-fall
-        // is bounded by Mars gravity rather than an arbitrary camera ease.
-        const substeps = Math.max(1, Math.ceil(suspensionDt * 120))
-        const h = suspensionDt / substeps
-        for (let index = 0; index < substeps; index++) {
-          const omega = SUSPENSION.springPerS
-          const acceleration = Math.max(-3.71,
-            omega * omega * (ground - bodyHeight) - 2 * omega * verticalSpeed)
-          verticalSpeed += acceleration * h
-          bodyHeight += verticalSpeed * h
-        }
-        // Wheels follow the surface directly; suspension changes attitude,
-        // never pushes the wheel plane beneath the ground or leaves it airborne.
-        let rideHeight = ground
-        const accel = suspensionDt > 0 ? (verticalSpeed - previousVerticalSpeed) / suspensionDt : 0
-        const tiltRaw = Math.max(
-          -SUSPENSION.maxTiltRad,
-          Math.min(SUSPENSION.maxTiltRad, accel * SUSPENSION.tiltGain),
-        )
-        // Smooth the pitch kick so DEM/LOD height jumps cannot snap it.
-        tiltSmooth +=
-          (tiltRaw - tiltSmooth) * (1 - Math.exp(-SUSPENSION.tiltSmoothPerS * dt))
-
-        const position = Cartesian3.fromDegrees(
-          driveSample.lon,
-          driveSample.lat,
-          rideHeight,
-          MARS,
-        )
-        // Smooth heading toward the route bearing, taking the short way
-        // around the circle (wrapPi; the old inline modulo expression
-        // returned -pi for a zero delta and spun the heading backward).
-        bearing +=
-          wrapPi(driveSample.bearing - bearing) * (1 - Math.exp(-CHASE.headingPerS * dt))
-        up = Cartesian3.lerp(
-          up,
-          terrainNormalAt(driveSample.lon, driveSample.lat),
-          1 - Math.exp(-CHASE.normalPerS * dt),
-          new Cartesian3(),
-        )
-        up = limitTilt(up)
-        // Slope-aware ground clearance: on steep tilts the capped body
-        // normal keeps the nose/tail corners from digging into the hill.
-        const clearance =
-          ROVER_GROUND_CLEARANCE + (1 - up.z) * TILT_CLEARANCE_M
-        const weatherRoll = weatherFx.rollForHeading(bearing)
-        if (scoutModel) {
-          let matrix = roverMatrix(
-            position,
-            bearing,
-            up,
-            tiltSmooth,
-            clearance,
-            weatherRoll,
-          )
-          // Dense contact envelope from the GLB's actual wheel bounds. Apply
-          // collision correction AFTER tilt/suspension, so a lagging body
-          // normal cannot push the uphill wheels through a ridge.
-          const lift = contactLift(matrix, wheelHeightAt, activeVehicleModel.contacts)
-          if (lift > 0) {
-            rideHeight += lift
-            bodyHeight = Math.max(bodyHeight, rideHeight)
-            verticalSpeed = Math.max(0, verticalSpeed)
-            Cartesian3.fromDegrees(driveSample.lon, driveSample.lat, rideHeight, MARS, position)
-            matrix = roverMatrix(position, bearing, up, tiltSmooth, clearance, weatherRoll)
-          }
-          scoutModel.modelMatrix = matrix
-          applyWeatherTint(scoutModel)
-          wheelDust?.update(matrix, velocityMps)
-        }
-        weatherFx.setAnchor(position)
-        roverViewRef.current = { position, heading: bearing, terrainProvider }
-        const scout = viewer.entities.getById('astra-scout')
-        if (scout) scout.position = new ConstantPositionProperty(position)
-
-        if (chaseActive) {
-          // Recenter behind the rover when the user is not dragging.
-          if (!orbit.dragging) {
-            orbit.yaw *= Math.exp(-ORBIT.recenterPerS * dt)
-            orbit.pitch +=
-              (ORBIT.defaultPitch - orbit.pitch) *
-              (1 - Math.exp(-ORBIT.recenterPerS * 0.6 * dt))
-          }
-          updateChaseCamera(driveSample, ground, dt)
-        }
-        // Throttled telemetry: the HUD, route-panel readouts, scrubber, and
-        // elevation-chart cursor all track the drive live. Passing a
-        // non-fatal danger zone raises the amber slip-risk banner.
-        if (now - lastHudPush > 200 || (wantsHalt && velocityMps === 0 && controls.speedMps !== 0)) {
-          lastHudPush = now
-          const zone = dangers.find(
-            (candidate) =>
-              Math.abs(sample.distanceKm - candidate.distance_km) <=
-              candidate.span_km / 2 + 0.25,
-          )
-          useDriveStore.getState().warn(zone ? zone.label : null)
-          useDriveStore.getState().update({
+          const store = useDriveStore.getState()
+          store.update({ paused: false, braking: false, speedMps: 0 })
+          store.crashed({
+            type,
+            detail,
             distanceKm: sample.distanceKm,
             gradeDeg: sample.gradeDeg,
-            elevationM: sample.elevationM,
-            headingDeg: (CesiumMath.toDegrees(bearing) + 360) % 360,
-            speedMult,
-            paused,
-            speedMps: velocityMps,
-            braking,
-            arriving: !wantsHalt && targetSpeed < SCOUT_CRUISE_MPS * gradeFactor / (1 + turn * 3),
-            timeScale,
           })
-          useAppStore.getState().setPreviewT(t)
         }
-        if (import.meta.env.DEV) {
-          ;(globalThis as unknown as Record<string, unknown>).__astraChase = {
-            bearing,
-            distance: orbit.distance,
-            pitch: orbit.pitch,
-            yaw: orbit.yaw,
-            cameraHeight,
-            roverRideHeight: rideHeight,
-            ground,
+
+        /** Animate the crash; returns false when the drive has ended. */
+        const stepCrash = (dt: number): boolean => {
+          const state = crash
+          if (!state) return false
+          const atOffset = (x: number): RouteSample => ({ ...state.origin,
+            lon: state.origin.lon + Math.sin(bearing) * x / (METERS_PER_DEG * Math.max(0.1, Math.cos(state.origin.lat * Math.PI / 180))),
+            lat: state.origin.lat + Math.cos(bearing) * x / METERS_PER_DEG,
+            distanceKm: state.origin.distanceKm + x / 1000,
+          })
+          advanceCrash(state.body, dt, x => groundAt(atOffset(x), corridor))
+          const sample = atOffset(state.body.x)
+          const ground = groundAt(sample, corridor)
+          const position = Cartesian3.fromDegrees(
+            sample.lon,
+            sample.lat,
+            state.body.z,
+            MARS,
+          )
+          if (scoutModel) {
+            // Rotate about the body centre, not the wheel-plane origin.
+            const matrix = roverMatrix(
+              position,
+              bearing,
+              Cartesian3.UNIT_Z,
+              state.body.pitch,
+              0,
+            )
+            scoutModel.modelMatrix = Matrix4.multiplyByTranslation(matrix, new Cartesian3(0, 0, -1), new Matrix4())
+            applyWeatherTint(scoutModel)
           }
+          weatherFx.setAnchor(position)
+          roverHeading = bearing
+          const scout = viewer.entities.getById('astra-scout')
+          if (scout) scout.position = new ConstantPositionProperty(position)
+
+          if (chaseActive) {
+            if (!orbit.dragging) {
+              orbit.yaw *= Math.exp(-ORBIT.recenterPerS * dt)
+            }
+            updateChaseCamera(sample, Math.max(ground, state.body.z - bodySupport(state.body.pitch)), dt)
+          }
+
+          if (
+            !state.arcing &&
+            state.body.settledFor >= 0.8
+          ) {
+            state.arcing = true
+            state.wreckTime = state.body.elapsed
+            spawnSparks(position)
+            useDriveStore.getState().update({ distanceKm: sample.distanceKm })
+          }
+          if (
+            state.arcing &&
+            state.body.elapsed - state.wreckTime >= CRASH.holdAfterCrashMs / 1000
+          ) {
+            endDrive()
+            // Recover onto the safe route when the wreck was on the
+            // hazardous comparison, so the safety story lands.
+            const store = useAppStore.getState()
+            if (store.routeChoice !== 'safe' && route.hazardous) {
+              store.setRouteChoice('safe')
+            }
+            return false
+          }
+          return true
         }
-        if (controls.stopRequested && velocityMps === 0) {
-          endDrive()
-          return
-        }
-        // Crash triggers: beginCrash reports the failure and takes over the
-        // loop — stepCrash owns every frame from the next one on.
-        const absGrade = Math.abs(sample.gradeDeg)
-        // The crewed SEV never risks the crew: it halts at the slope envelope.
-        if (vehicle === 'sev' && absGrade >= rolloverGradeDeg) {
-          endDrive('risk-hold')
-          return
-        }
-        // The auto-deployed rover is a deliberate robotic approach, so it
-        // tolerates ordinary over-limit grades and only topples against a
-        // genuine landform: a planner-classified cliff zone (a near-vertical
-        // MOLA drop it can fall off or smash into), or terrain that has become
-        // cliff-steep. A bare over-limit grade is not a topple cause, so on an
-        // otherwise hazardous-but-navigable traverse the rover reaches the
-        // target. The topple only occurs when the user chose this unsafe route
-        // over the planner's safe traverse.
-        if (topplesAtCliff(absGrade, sample.distanceKm, dangers, CRASH.fallGradeDeg)) {
-          beginCrash('fall', sample)
-          scoutFrame = requestAnimationFrame(step)
-          return
-        }
-        // Arrival is judged on distance, not on the recomputed fraction:
-        // destinationT * totalKm * 1000 can fail to round-trip through
-        // distanceM / (totalKm * 1000), leaving `t < destinationT` true forever.
-        // A detour also has to finish sidling into its off-route parking point.
-        const arrived = alongRemainingM <= 0.01 && Math.abs(destinationSideM - lateralM) <= 0.75
-        if (!arrived || wantsHalt) {
-          scoutFrame = requestAnimationFrame(step)
-        } else if (scienceTargetSiteId && !deploying) {
-          const site = useScienceStore.getState().sites.find(candidate => candidate.id === scienceTargetSiteId)
-          if (site) void beginScienceStop(site)
-          else {
-            scienceTargetSiteId = null
+
+        const step = (now: number) => {
+          if (token !== scoutToken) return
+          if (crash && useDriveStore.getState().stopRequested) {
+            endDrive()
+            return
+          }
+          const wallDt = document.hidden ? 0 : Math.min(1, Math.max(0, (now - lastFrame) / 1000))
+          const dt = Math.min(0.1, Math.max(0.001, wallDt))
+          lastFrame = now
+          if (crash) {
+            if (stepCrash(dt)) scoutFrame = requestAnimationFrame(step)
+            return
+          }
+          const controls = useDriveStore.getState()
+          paused = controls.paused
+          speedMult = controls.speedMult
+          // Consume an accepted science detour: retarget the SEV to the off-route
+          // parking point and remember the real destination for the resume.
+          const scienceNow = useScienceStore.getState()
+          if (scienceNow.detourSiteId) {
+            const site = scienceNow.sites.find(candidate => candidate.id === scienceNow.detourSiteId)
+            scienceNow.consumeDetour()
+            if (site && site.safety !== 'unsafe' && site.alongKm / totalKm > lastT + 0.0005) {
+              destinationT = Math.min(finalDestinationT, site.alongKm / totalKm)
+              destinationSideM = site.parkSideM
+              scienceTargetSiteId = site.id
+              useScienceStore.getState().toast('info', `Detour accepted · ${siteLabel(site)}`)
+            } else {
+              useScienceStore.getState().cancelDetour()
+              useScienceStore.getState().toast('warn', 'That science site is no longer ahead of the vehicle.')
+            }
+          }
+          const timeScale = controls.travelMode === 'preview'
+            ? Math.max(1, totalKm * 1000 / (90 * SCOUT_CRUISE_MPS))
+            : 1
+          const wantsHalt = paused || controls.stopRequested
+          // Presentation dynamics stay bounded even for a long traverse preview.
+          const suspensionDt = wantsHalt && velocityMps === 0 ? 0 : dt * speedMult
+          const ahead = sampleRoute(traverse, Math.min(1, lastT + 0.005 / Math.max(totalKm, 0.005)))
+          const here = sampleRoute(traverse, lastT)
+          const probeDistanceM = Math.max(0.01, (ahead.distanceKm - here.distanceKm) * 1000)
+          const localGrade = CesiumMath.toDegrees(Math.atan2(
+            groundAt(ahead, corridor) - groundAt(here, corridor), probeDistanceM,
+          ))
+          const gradeFactor = 1 / (1 + Math.max(Math.abs(ahead.gradeDeg), Math.abs(localGrade)) / 8)
+          const turn = Math.abs(wrapPi(ahead.bearing - bearing))
+          const alongRemainingM = Math.max(0, destinationT * totalKm * 1000 - distanceM)
+          const remainingM = alongRemainingM + Math.abs(destinationSideM - lateralM)
+          const targetSpeed = wantsHalt ? 0 : Math.min(
+            SCOUT_CRUISE_MPS * gradeFactor / (1 + turn * 3),
+            arrivalSpeedLimit(remainingM, timeScale * speedMult, velocityMps, wallDt),
+          )
+          const motion = advanceDrive(velocityMps, targetSpeed, wallDt)
+          velocityMps = motion.speed
+          distanceM = Math.min(destinationT * totalKm * 1000, distanceM + motion.distance * timeScale * speedMult)
+          if (!wantsHalt && alongRemainingM < 0.01) distanceM = destinationT * totalKm * 1000
+          const braking = wantsHalt && velocityMps > 0
+          if (braking !== controls.braking) useDriveStore.getState().update({ braking })
+          const t = totalKm > 0 ? distanceM / (totalKm * 1000) : 1
+          lastT = t
+          const sample = sampleRoute(traverse, t)
+          // Sidle off the route into the parking point as the SEV nears a science
+          // detour; back on the route, the same spring returns it to the centre.
+          const targetAlongM = destinationT * totalKm * 1000
+          if (Math.abs(destinationSideM) > 0.01) {
+            const desired = destinationSideM * Math.max(0, Math.min(1, (distanceM - (targetAlongM - 45)) / 45))
+            lateralM += (desired - lateralM) * (1 - Math.exp(-3 * dt))
+            if (Math.abs(lateralM) < 0.01) lateralM = 0
+          } else if (lateralM !== 0) {
+            lateralM *= Math.exp(-2.5 * dt)
+            if (Math.abs(lateralM) < 0.01) lateralM = 0
+          }
+          const driveSample = Math.abs(lateralM) > 0.005 ? offsetRouteSample(sample, lateralM) : sample
+          const ground = groundAt(driveSample, corridor)
+          // Suggest a detour while the vehicle is still approaching an unvisited,
+          // crew-safe site. It disappears by itself once the site is passed, and
+          // an explicit "Keep driving" mutes that site until it is behind us.
+          // Preview compresses a whole traverse into ~90 s, so a fixed 260 m
+          // window can slide past in a fraction of a second. Scale the window
+          // with the effective ground speed to keep a usable reaction time; the
+          // 260 m floor preserves the short-lead behaviour in real time.
+          const effectiveSpeedMps = SCOUT_CRUISE_MPS * timeScale * speedMult
+          const promptLeadM = Math.max(260, effectiveSpeedMps * 7)
+          if (now - lastSciencePromptCheck > 250) {
+            lastSciencePromptCheck = now
+            const science = useScienceStore.getState()
+            if (science.phase === 'off' && !scienceTargetSiteId) {
+              const logged = new Set(science.logs.map(entry => entry.siteId))
+              if (science.promptSiteId !== lastPromptId) {
+                if (!science.promptSiteId && lastPromptId) {
+                  const dismissed = science.sites.find(candidate => candidate.id === lastPromptId)
+                  if (dismissed && dismissed.alongKm * 1000 > distanceM + 25 && !logged.has(dismissed.id)) {
+                    mutedPromptId = dismissed.id
+                    promptCooldownUntil = now + 6000
+                  }
+                }
+                lastPromptId = science.promptSiteId
+              }
+              if (science.promptSiteId) {
+                const prompted = science.sites.find(candidate => candidate.id === science.promptSiteId)
+                const thereM = prompted ? prompted.alongKm * 1000 : 0
+                if (!prompted || distanceM > thereM + 50 || thereM - distanceM > promptLeadM) science.dismissPrompt()
+              } else if (now >= promptCooldownUntil) {
+                const next = science.sites.find(candidate =>
+                  candidate.id !== mutedPromptId &&
+                  candidate.safety !== 'unsafe' &&
+                  !logged.has(candidate.id) &&
+                  candidate.alongKm * 1000 > distanceM + 25 &&
+                  candidate.alongKm * 1000 - distanceM <= promptLeadM)
+                if (next) science.prompt(next.id)
+              }
+            }
+          }
+          if (controls.jetRequested && vehicle === 'rover') {
+            beginCrash('jet', sample)
+            scoutFrame = requestAnimationFrame(step)
+            return
+          }
+
+          driveSurface?.update(distanceM, now)
+
+          // Suspension affects attitude; the wheel envelope stays grounded.
+          const previousVerticalSpeed = verticalSpeed
+          // Fixed-size spring integration gives the same suspension response
+          // at different frame rates and playback speeds. Downward free-fall
+          // is bounded by Mars gravity rather than an arbitrary camera ease.
+          const substeps = Math.max(1, Math.ceil(suspensionDt * 120))
+          const h = suspensionDt / substeps
+          for (let index = 0; index < substeps; index++) {
+            const omega = SUSPENSION.springPerS
+            const acceleration = Math.max(-3.71,
+              omega * omega * (ground - bodyHeight) - 2 * omega * verticalSpeed)
+            verticalSpeed += acceleration * h
+            bodyHeight += verticalSpeed * h
+          }
+          // Wheels follow the surface directly; suspension changes attitude,
+          // never pushes the wheel plane beneath the ground or leaves it airborne.
+          let rideHeight = ground
+          const accel = suspensionDt > 0 ? (verticalSpeed - previousVerticalSpeed) / suspensionDt : 0
+          const tiltRaw = Math.max(
+            -SUSPENSION.maxTiltRad,
+            Math.min(SUSPENSION.maxTiltRad, accel * SUSPENSION.tiltGain),
+          )
+          // Smooth the pitch kick so DEM/LOD height jumps cannot snap it.
+          tiltSmooth +=
+            (tiltRaw - tiltSmooth) * (1 - Math.exp(-SUSPENSION.tiltSmoothPerS * dt))
+
+          const position = Cartesian3.fromDegrees(
+            driveSample.lon,
+            driveSample.lat,
+            rideHeight,
+            MARS,
+          )
+          // Smooth heading toward the route bearing, taking the short way
+          // around the circle (wrapPi; the old inline modulo expression
+          // returned -pi for a zero delta and spun the heading backward).
+          bearing +=
+            wrapPi(driveSample.bearing - bearing) * (1 - Math.exp(-CHASE.headingPerS * dt))
+          up = Cartesian3.lerp(
+            up,
+            terrainNormalAt(driveSample.lon, driveSample.lat),
+            1 - Math.exp(-CHASE.normalPerS * dt),
+            new Cartesian3(),
+          )
+          up = limitTilt(up)
+          // Slope-aware ground clearance: on steep tilts the capped body
+          // normal keeps the nose/tail corners from digging into the hill.
+          const clearance =
+            ROVER_GROUND_CLEARANCE + (1 - up.z) * TILT_CLEARANCE_M
+          const weatherRoll = weatherFx.rollForHeading(bearing)
+          if (scoutModel) {
+            let matrix = roverMatrix(
+              position,
+              bearing,
+              up,
+              tiltSmooth,
+              clearance,
+              weatherRoll,
+            )
+            // Dense contact envelope from the GLB's actual wheel bounds. Apply
+            // collision correction AFTER tilt/suspension, so a lagging body
+            // normal cannot push the uphill wheels through a ridge.
+            const lift = contactLift(matrix, wheelHeightAt, activeVehicleModel.contacts)
+            if (lift > 0) {
+              rideHeight += lift
+              bodyHeight = Math.max(bodyHeight, rideHeight)
+              verticalSpeed = Math.max(0, verticalSpeed)
+              Cartesian3.fromDegrees(driveSample.lon, driveSample.lat, rideHeight, MARS, position)
+              matrix = roverMatrix(position, bearing, up, tiltSmooth, clearance, weatherRoll)
+            }
+            scoutModel.modelMatrix = matrix
+            applyWeatherTint(scoutModel)
+            wheelDust?.update(matrix, velocityMps)
+          }
+          weatherFx.setAnchor(position)
+          roverHeading = bearing
+          const scout = viewer.entities.getById('astra-scout')
+          if (scout) scout.position = new ConstantPositionProperty(position)
+
+          if (chaseActive) {
+            // Recenter behind the rover when the user is not dragging.
+            if (!orbit.dragging) {
+              orbit.yaw *= Math.exp(-ORBIT.recenterPerS * dt)
+              orbit.pitch +=
+                (ORBIT.defaultPitch - orbit.pitch) *
+                (1 - Math.exp(-ORBIT.recenterPerS * 0.6 * dt))
+            }
+            updateChaseCamera(driveSample, ground, dt)
+          }
+          // Throttled telemetry: the HUD, route-panel readouts, scrubber, and
+          // elevation-chart cursor all track the drive live. Passing a
+          // non-fatal danger zone raises the amber slip-risk banner.
+          if (now - lastHudPush > 200 || (wantsHalt && velocityMps === 0 && controls.speedMps !== 0)) {
+            lastHudPush = now
+            const zone = dangers.find(
+              (candidate) =>
+                Math.abs(sample.distanceKm - candidate.distance_km) <=
+                candidate.span_km / 2 + 0.25,
+            )
+            useDriveStore.getState().warn(zone ? zone.label : null)
+            useDriveStore.getState().update({
+              distanceKm: sample.distanceKm,
+              gradeDeg: sample.gradeDeg,
+              elevationM: sample.elevationM,
+              headingDeg: (CesiumMath.toDegrees(bearing) + 360) % 360,
+              speedMult,
+              paused,
+              speedMps: velocityMps,
+              braking,
+              arriving: !wantsHalt && targetSpeed < SCOUT_CRUISE_MPS * gradeFactor / (1 + turn * 3),
+              timeScale,
+            })
+            useAppStore.getState().setPreviewT(t)
+          }
+          if (import.meta.env.DEV) {
+            ;(globalThis as unknown as Record<string, unknown>).__astraChase = {
+              bearing,
+              distance: orbit.distance,
+              pitch: orbit.pitch,
+              yaw: orbit.yaw,
+              cameraHeight,
+              roverRideHeight: rideHeight,
+              ground,
+            }
+          }
+          if (controls.stopRequested && velocityMps === 0) {
+            endDrive()
+            return
+          }
+          // Crash triggers: beginCrash reports the failure and takes over the
+          // loop — stepCrash owns every frame from the next one on.
+          const absGrade = Math.abs(sample.gradeDeg)
+          // The crewed SEV never risks the crew: it halts at the slope envelope.
+          if (vehicle === 'sev' && absGrade >= rolloverGradeDeg) {
+            endDrive('risk-hold')
+            return
+          }
+          // The auto-deployed rover is a deliberate robotic approach, so it
+          // tolerates ordinary over-limit grades and only topples against a
+          // genuine landform: a planner-classified cliff zone (a near-vertical
+          // MOLA drop it can fall off or smash into), or terrain that has become
+          // cliff-steep. A bare over-limit grade is not a topple cause, so on an
+          // otherwise hazardous-but-navigable traverse the rover reaches the
+          // target. The topple only occurs when the user chose this unsafe route
+          // over the planner's safe traverse.
+          if (topplesAtCliff(absGrade, sample.distanceKm, dangers, CRASH.fallGradeDeg)) {
+            beginCrash('fall', sample)
+            scoutFrame = requestAnimationFrame(step)
+            return
+          }
+          // Arrival is judged on distance, not on the recomputed fraction:
+          // destinationT * totalKm * 1000 can fail to round-trip through
+          // distanceM / (totalKm * 1000), leaving `t < destinationT` true forever.
+          // A detour also has to finish sidling into its off-route parking point.
+          const arrived = alongRemainingM <= 0.01 && Math.abs(destinationSideM - lateralM) <= 0.75
+          if (!arrived || wantsHalt) {
+            scoutFrame = requestAnimationFrame(step)
+          } else if (scienceTargetSiteId && !deploying) {
+            const site = useScienceStore.getState().sites.find(candidate => candidate.id === scienceTargetSiteId)
+            if (site) void beginScienceStop(site)
+            else {
+              scienceTargetSiteId = null
+              void handoff()
+            }
+          } else if (deploying) {
+            endDrive('arrived')
+          } else {
             void handoff()
           }
-        } else if (deploying) {
-          endDrive('arrived')
-        } else {
-          void handoff()
         }
+        scoutFrame = requestAnimationFrame(step)
+      } catch (error) {
+        if (token !== scoutToken) return
+        console.error('Scout start failed', error)
+        removeScout()
+        useDriveStore.getState().update({ completion: 'risk-hold', missionPhase: 'hold', crewMessage: 'Traverse could not start. Try recalculating the route.' })
+        useAppStore.getState().setRoutePhase('preview')
+        setPreviewMarkerVisible(true)
       }
-      scoutFrame = requestAnimationFrame(step)
     }
 
     const unregister = onCommand('fly_to', async (payload) => {
@@ -2728,6 +2748,17 @@ export default function CesiumMap() {
     }
   }, [])
 
+  const toGlobeView = () => {
+    if (!mapViewer || mapViewer.isDestroyed()) return
+    const carto = mapViewer.camera.positionCartographic
+    const lon = CesiumMath.toDegrees(carto.longitude)
+    const lat = CesiumMath.toDegrees(carto.latitude)
+    mapViewer.camera.flyTo({
+      destination: Cartesian3.fromDegrees(lon, lat, 12_000_000, MARS),
+      duration: 1.0,
+    })
+  }
+
   return (
     <>
       <div ref={containerRef} className="h-full w-full" />
@@ -2737,7 +2768,11 @@ export default function CesiumMap() {
       <ScienceToast />
       {mapViewer && !mapViewer.isDestroyed() && <MapExplorer viewer={mapViewer} />}
       {mapViewer && !mapViewer.isDestroyed() && <EnvironmentOverlay viewer={mapViewer} />}
-      <RoverCameraWindow poseRef={roverViewRef} />
+      <div className="pointer-events-none fixed bottom-[92px] left-1/2 z-20 flex -translate-x-1/2">
+        <button type="button" onClick={toGlobeView} className="pointer-events-auto rounded-full border border-white/20 bg-neutral-950/80 px-3 py-1.5 text-[11px] font-medium text-neutral-100 shadow-lg backdrop-blur hover:bg-white/10">
+          Globe view
+        </button>
+      </div>
     </>
   )
 }

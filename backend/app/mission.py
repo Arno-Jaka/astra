@@ -2,7 +2,9 @@
 
 from pydantic import BaseModel, Field
 
-BOXWORK_SOURCE = "https://science.nasa.gov/photojournal/curiosity-views-boxwork-patterns-at-a-distance/"
+from .config import settings
+
+BOXWORK_SOURCE = settings.boxwork_source_url
 MISSION = {
     "title": "Gale / Mount Sharp surface-science mission",
     "objective": "Investigate boxwork ridges for evidence of ancient groundwater",
@@ -11,7 +13,7 @@ MISSION = {
               "Record fracture orientation and candidate observation stations.",
               "Plan a return traverse with time for imaging and sampling."],
     "source_url": BOXWORK_SOURCE,
-    "image_url": "https://assets.science.nasa.gov/content/dam/science/psd/photojournal/pia/pia26/pia26560/PIA26560.jpg",
+    "image_url": settings.boxwork_image_url,
     "image_credit": "NASA/JPL-Caltech/MSSS · Mastcam · May 22, 2025 · PIA26560 (Earth-like color balance)",
     "region": {"lon": 137.85, "lat": -5.08, "name": "Mount Sharp (Aeolis Mons)"},
     "location_note": "The map focus is a regional gazetteer coordinate, not a surveyed boxwork outcrop. Select a candidate science destination; exact outcrop access and obstacles require higher-resolution mapping.",

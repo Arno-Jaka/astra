@@ -106,7 +106,7 @@ export default function App() {
       </FloatingPanel>
 
       <main>
-        <FloatingPanel id="environment" title="Weather & radiation" width={340} initial={{ left: 16, top: 90 }}>
+        <FloatingPanel id="environment" title="Weather & radiation" width={340} initial={{ left: 16, top: 72 }}>
           <div className="max-h-[32vh] overflow-auto">
             <EnvironmentPanel />
           </div>
@@ -125,9 +125,9 @@ export default function App() {
             }}
           />
         </FloatingPanel>
-        {briefing ? <FloatingPanel id="briefing" title="Science briefing" width={420} initial={{ right: 460, top: 110 }}><SurvivalBriefingPanel briefing={briefing} /></FloatingPanel> : null}
-        {conditions ? <FloatingPanel id="conditions" title="NASA conditions" width={380} initial={{ right: 460, top: 110 }}><ConditionsCard conditions={conditions} /></FloatingPanel> : null}
-        {route ? <FloatingPanel id="route" title="Traverse plan" width={420} initial={{ right: 16, bottom: 16 }}><div className="max-h-[62vh] overflow-auto"><RoutePanel route={route} /></div></FloatingPanel> : null}
+        {briefing ? <FloatingPanel id="briefing" title="Science briefing" width={420} initial={{ right: 16, bottom: 16 }}><SurvivalBriefingPanel briefing={briefing} /></FloatingPanel> : null}
+        {conditions ? <FloatingPanel id="conditions" title="NASA conditions" width={380} initial={{ right: 16, bottom: 16 }}><ConditionsCard conditions={conditions} /></FloatingPanel> : null}
+        {route ? <FloatingPanel id="route" title="Traverse plan" width={420} initial={{ right: 16, top: 360 }}><div className="max-h-[62vh] overflow-auto"><RoutePanel route={route} /></div></FloatingPanel> : null}
       </main>
     </div>
   )

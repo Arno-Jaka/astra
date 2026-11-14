@@ -22,6 +22,8 @@ const metaUrl = await moduleUrl('../src/store/environmentMeta.ts')
 const meta = await import(metaUrl)
 const { useEnvironmentStore, environmentResponseSchema } = await import(storeUrl)
 
+const MSL_SOURCE_URL = process.env.MSL_SOURCE_URL || 'https://science.nasa.gov/mission/msl-curiosity/'
+
 const zone = {
   id: 'gale',
   name: 'Gale Crater',
@@ -45,7 +47,7 @@ const zone = {
     note: 'Scaled from the Curiosity RAD surface average; not a measured dose for this spot.',
   },
   basis: 'derived',
-  source_url: 'https://science.nasa.gov/mission/msl-curiosity/',
+  source_url: MSL_SOURCE_URL,
   note: 'Regional screening only. Terrain/slope suitability is assessed separately.',
 }
 
@@ -53,8 +55,8 @@ const payload = {
   zones: [zone, { ...zone, id: 'olympus', name: 'Olympus Mons', classification: 'unsafe' }],
   basis: 'derived',
   note: 'Illustrative regional weather/radiation screening; not a measured dose.',
-  radiation_source_url: 'https://science.nasa.gov/mission/msl-curiosity/',
-  weather_source_url: 'https://science.nasa.gov/mission/msl-curiosity/',
+  radiation_source_url: MSL_SOURCE_URL,
+  weather_source_url: MSL_SOURCE_URL,
 }
 
 assert.equal(environmentResponseSchema.safeParse(payload).success, true)

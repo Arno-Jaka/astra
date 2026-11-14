@@ -4,7 +4,9 @@ import time
 import urllib.request
 from typing import Any
 
-REMS_URL = "https://mars.nasa.gov/rss/api/?feed=weather&category=msl&feedtype=json"
+from .config import settings
+
+REMS_URL = settings.rems_url
 CACHE_TTL_S = 1800.0
 
 _cache: dict[str, Any] = {"sol": None, "fetched_at": 0.0}
@@ -12,7 +14,7 @@ _cache: dict[str, Any] = {"sol": None, "fetched_at": 0.0}
 
 def _download() -> dict[str, Any]:
     request = urllib.request.Request(
-        REMS_URL, headers={"User-Agent": "ASTRA/0.1 (NASA Space Apps)"}
+        REMS_URL, headers={"User-Agent": settings.rems_user_agent}
     )
     with urllib.request.urlopen(request, timeout=30) as response:
         payload = json.load(response)
