@@ -616,6 +616,8 @@ export default function TerrainSimulationView() {
     let jumpT = -1
     let jetT = -1
     let bob = 0
+    let crashFall = 0
+    let lastCrash: any = null
     const crewPos: { x: number; z: number; init: boolean }[] = []
     const animate = () => {
       animId = requestAnimationFrame(animate)
@@ -705,9 +707,12 @@ export default function TerrainSimulationView() {
             if (jumpT >= 0) { jumpT += dt; const j = Math.sin(Math.min(1, jumpT / 0.7) * Math.PI); w.vehicleObj.position.y += j * 1.1; if (jumpT > 0.7) jumpT = -1 }
             if (jetT >= 0) { jetT += dt; w.vehicleObj.position.y += Math.min(1, jetT / 0.8) * 2.2; if (jetT > 1.2) jetT = -1 }
             if (st.crash) {
+              if (st.crash !== lastCrash) { crashFall = 0; lastCrash = st.crash }
               if (st.crash.type === 'rollover') w.vehicleObj.rotateZ(1.2)
-              if (st.crash.type === 'fall') w.vehicleObj.position.y -= 0.8
+              if (st.crash.type === 'fall') { crashFall = Math.min(crashFall + dt * 1.2, 2.5); w.vehicleObj.position.y -= crashFall }
               if (st.crash.type === 'jet' && jetT < 0) w.vehicleObj.position.y += 1.6
+            } else {
+              crashFall = 0; lastCrash = null
             }
 
             // crew placement/movement on DEM surface (mission/science phases)
