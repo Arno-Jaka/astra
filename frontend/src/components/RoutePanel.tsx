@@ -261,7 +261,7 @@ export default function RoutePanel({ route }: { route: RouteData }) {
         ) : (
           <p className="text-amber-200">The selected traverse is not crew-safe: the SEV parks at the last safe point and the rover performs the final approach, so there is no on-foot leg to the target.</p>
         )}
-        <p className="text-amber-200">{hazardous || !route.slope_compliant ? 'Exceeds the selected regional slope envelope.' : 'Meets the selected regional slope envelope.'} Local obstacles and suit consumables remain unassessed; the weather/radiation panel is a derived regional screening, not a certified EVA assessment.</p>
+        <p className="text-amber-200">{hazardous || !route.slope_compliant ? 'Exceeds the selected regional slope envelope.' : 'Meets the selected regional slope envelope.'} Local obstacles and suit consumables remain unassessed; regional weather/radiation screening is illustrative, not a certified EVA assessment.</p>
         <p className="text-neutral-400">User-assumed walking pace and suit/equipment time allowance. No oxygen, metabolic or suit certification model; radiation screening is regional and illustrative, not a dose plan.</p>
       </section> : null}
 

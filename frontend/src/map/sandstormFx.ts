@@ -9,7 +9,7 @@ import {
   Viewer,
 } from 'cesium'
 
-const PARTICLE_COUNT = 25000
+const PARTICLE_COUNT = 12000
 const BOUNDS = { x: 100, y: 30, z: 100 }
 const WIND = { x: -0.5, y: -0.05, z: 0.2 }
 
@@ -21,9 +21,9 @@ function makeSoftDisc(): HTMLCanvasElement {
   const ctx = canvas.getContext('2d')!
   const center = size / 2
   const gradient = ctx.createRadialGradient(center, center, 0, center, center, center)
-  gradient.addColorStop(0, 'rgba(255,255,255,1)')
-  gradient.addColorStop(0.7, 'rgba(255,255,255,0.8)')
-  gradient.addColorStop(1, 'rgba(255,255,255,0)')
+  gradient.addColorStop(0, 'rgba(255, 255, 255, 1)')
+  gradient.addColorStop(0.7, 'rgba(255, 255, 255, 0.8)')
+  gradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
   ctx.fillStyle = gradient
   ctx.fillRect(0, 0, size, size)
   return canvas
@@ -43,49 +43,48 @@ export function createSandstormFx(viewer: Viewer) {
     })
   }
 
+  const life = 8
   const system = new ParticleSystem({
     modelMatrix: Matrix4.clone(Matrix4.IDENTITY),
     emitter: new BoxEmitter(new Cartesian3(BOUNDS.x / 2, BOUNDS.z / 2, BOUNDS.y / 2)),
-    emissionRate: PARTICLE_COUNT / 4,
+    emissionRate: PARTICLE_COUNT / life,
     minimumSpeed: 0,
-    maximumSpeed: 0.001,
-    minimumParticleLife: 100000,
-    maximumParticleLife: 100000,
+    maximumSpeed: 0.01,
+    minimumParticleLife: life,
+    maximumParticleLife: life,
     startScale: 1,
     endScale: 1,
     image: makeSoftDisc(),
-    imageSize: new Cartesian2(14, 14),
+    imageSize: new Cartesian2(12, 12),
     sizeInMeters: true,
     startColor: Color.fromCssColorString('#cca473').withAlpha(0.7),
     endColor: Color.fromCssColorString('#cca473').withAlpha(0.7),
-    updateCallback: (particle, _dt) => {
-      const index = (particle as unknown as { _astraIndex?: number })._astraIndex ?? 0
-      const v = velocities[index % velocities.length]
-      particle.velocity.x = v.x
-      particle.velocity.y = v.z
-      particle.velocity.z = v.y + Math.sin(performance.now() / 1000 * v.speed) * v.amplitude
-    },
   })
 
-  // Assign stable indices so each particle keeps its turbulence profile.
-  let nextIndex = 0
-  const originalBurst = (system as unknown as { _emit?: unknown })
-  void originalBurst
-  // Cesium assigns particles internally; tag on first update by position cycling fallback.
-  // Simpler: use emitterInitializers isn't available; instead track via a counter on update.
   const tag = new WeakMap<object, number>()
-  const baseUpdate = system.updateCallback
+  let nextIndex = 0
   system.updateCallback = (particle, dt) => {
     let idx = tag.get(particle as object)
     if (idx === undefined) {
       idx = nextIndex++ % velocities.length
       tag.set(particle as object, idx)
     }
-    ;(particle as unknown as { _astraIndex: number })._astraIndex = idx
-    baseUpdate(particle, dt)
+    const v = velocities[idx]
+    const time = performance.now() / 1000
 
-    // Boundary recycling in local emitter space.
+    // Directional drift + swirling sine-wave turbulence.
+    particle.velocity.x = v.x
+    particle.velocity.y = v.z
+    particle.velocity.z = v.y + Math.sin(time * v.speed) * v.amplitude
+
+    // Advance position explicitly for predictable storm motion.
+    particle.position.x += particle.velocity.x * dt * 20
+    particle.position.y += particle.velocity.y * dt * 20
+    particle.position.z += particle.velocity.z * dt * 20
+
+    // Seamless boundary recycling within the storm bounds.
     if (particle.position.x < -BOUNDS.x / 2) particle.position.x = BOUNDS.x / 2
+    if (particle.position.x > BOUNDS.x / 2) particle.position.x = -BOUNDS.x / 2
     if (particle.position.y < -BOUNDS.z / 2) particle.position.y = BOUNDS.z / 2
     if (particle.position.y > BOUNDS.z / 2) particle.position.y = -BOUNDS.z / 2
     if (particle.position.z < 0) particle.position.z = BOUNDS.y
@@ -98,12 +97,12 @@ export function createSandstormFx(viewer: Viewer) {
 
   const preRender = viewer.scene.preRender.addEventListener(() => {
     const position = viewer.camera.positionWC
-    if (Cartesian3.distance(position, anchor) > 40) {
+    if (!Number.isFinite(position.x)) return
+    if (Cartesian3.distance(position, anchor) > 30) {
       anchor = Cartesian3.clone(position)
     }
     Transforms.eastNorthUpToFixedFrame(anchor, undefined, system.modelMatrix)
-    // Lift emitter volume slightly above ground/camera reference for visibility.
-    Matrix4.multiplyByTranslation(system.modelMatrix, new Cartesian3(0, 0, -5), system.modelMatrix)
+    Matrix4.multiplyByTranslation(system.modelMatrix, new Cartesian3(0, 0, 0), system.modelMatrix)
   })
 
   return {

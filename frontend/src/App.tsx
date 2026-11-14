@@ -15,7 +15,7 @@ const WELCOME: ChatMessage = {
   id: 0,
   role: 'assistant',
   content:
-    'ASTRA online. Select a departure point and a destination on the map; ASTRA predicts the safest and hazardous traverses and assigns a vehicle. A crew-safe destination sends the Space Exploration Vehicle all the way, with three astronauts walking or hopping the final approach; a hazardous destination parks the SEV nearby and auto-deploys a rover. The weather & radiation panel screens regions as safe, caution or unsafe. Adjust mission parameters in the traverse plan. I can also fly to sites, retrieve Gale REMS reports and explain MOLA route hazards.',
+    'ASTRA online. Select a departure point and a destination on the map; ASTRA predicts the safest and hazardous traverses and assigns a vehicle. A crew-safe destination sends the Space Exploration Vehicle all the way, with three astronauts walking or hopping the final approach; a hazardous destination parks the SEV nearby and auto-deploys a rover. Adjust mission parameters in the traverse plan. I can also fly to sites, retrieve site conditions (including Gale REMS reports) and explain MOLA route hazards.',
 }
 
 export default function App() {
