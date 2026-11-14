@@ -222,6 +222,7 @@ export default function TerrainSimulationView() {
     target: THREE.Vector3
     spherical: { radius: number; theta: number; phi: number }
   } | null>(null)
+  const scienceMeshesRef = useRef<{ id: string; obj: THREE.Object3D }[]>([])
 
   useEffect(() => {
     const container = containerRef.current
@@ -488,9 +489,39 @@ export default function TerrainSimulationView() {
     const onContextMenu = (e: MouseEvent) => e.preventDefault()
 
     const domElem = renderer.domElement
-    domElem.addEventListener('pointerdown', onPointerDown)
+    const raycaster = new THREE.Raycaster()
+    const pointer = new THREE.Vector2()
+    let downX = 0, downY = 0
+    const onPointerDownWrap = (e: PointerEvent) => { downX = e.clientX; downY = e.clientY; onPointerDown(e) }
+    const onPointerUpWrap = (e: PointerEvent) => {
+      onPointerUp()
+      const dx = e.clientX - downX, dy = e.clientY - downY
+      if (dx * dx + dy * dy > 36 || e.button !== 0) return
+      const rect = domElem.getBoundingClientRect()
+      pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
+      pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
+      raycaster.setFromCamera(pointer, camera)
+      const hits = raycaster.intersectObjects(scienceMeshesRef.current.map((m) => m.obj), true)
+      const hit = hits[0]?.object
+      let siteId: string | null = null
+      let cur: THREE.Object3D | null = hit ?? null
+      while (cur && !siteId) { siteId = (cur.userData?.siteId as string) || null; cur = cur.parent }
+      if (!siteId) return
+      const ss = useScienceStore.getState()
+      const site = ss.sites.find((s) => s.id === siteId)
+      if (!site) return
+      if (ss.phase === 'off' && ss.promptSiteId !== siteId) ss.prompt(siteId)
+      else if (ss.phase === 'done' && ss.activeSiteId) {
+        // allow requesting move to another nearby site from a completed stop
+        if (siteId !== ss.activeSiteId) ss.requestMove(siteId)
+        else if (ss.canBoard) ss.requestBoard()
+      } else if (ss.phase === 'off' && ss.promptSiteId === siteId) {
+        ss.acceptDetour(siteId)
+      }
+    }
+    domElem.addEventListener('pointerdown', onPointerDownWrap)
     window.addEventListener('pointermove', onPointerMove)
-    window.addEventListener('pointerup', onPointerUp)
+    window.addEventListener('pointerup', onPointerUpWrap)
     domElem.addEventListener('wheel', onWheel, { passive: false })
     domElem.addEventListener('contextmenu', onContextMenu)
 
@@ -590,9 +621,9 @@ export default function TerrainSimulationView() {
     return () => {
       worldRef.current = null
       window.removeEventListener('resize', handleResize)
-      domElem.removeEventListener('pointerdown', onPointerDown)
+      domElem.removeEventListener('pointerdown', onPointerDownWrap)
       window.removeEventListener('pointermove', onPointerMove)
-      window.removeEventListener('pointerup', onPointerUp)
+      window.removeEventListener('pointerup', onPointerUpWrap)
       domElem.removeEventListener('wheel', onWheel)
       domElem.removeEventListener('contextmenu', onContextMenu)
       cancelAnimationFrame(animId)
@@ -671,6 +702,7 @@ export default function TerrainSimulationView() {
     if (!w || !bounds) return
     const g = w.scienceGroup
     while (g.children.length) g.remove(g.children[0])
+    scienceMeshesRef.current = []
     const done = new Set(logs.map((l) => l.siteId))
     for (const site of scienceSites) {
       const p = lonLatToLocal(site.lon, site.lat, bounds)
@@ -678,13 +710,18 @@ export default function TerrainSimulationView() {
       const isActive = site.id === activeSiteId
       const isDone = done.has(site.id)
       const baseColor = isDone ? 0x94a3b8 : (parseInt((SCIENCE_META[site.kind]?.color ?? '#38bdf8').replace('#', ''), 16) || 0x38bdf8)
+      const group = new THREE.Group()
       const ring = new THREE.Mesh(new THREE.RingGeometry(isActive ? 1.0 : 0.7, isActive ? 1.6 : 1.1, 28), new THREE.MeshBasicMaterial({ color: baseColor, transparent: true, opacity: isDone ? 0.35 : 0.7, side: THREE.DoubleSide }))
       ring.rotation.x = -Math.PI / 2
-      ring.position.set(p.x, y + 0.18, p.z)
-      g.add(ring)
+      ring.position.set(0, 0.18, 0)
+      group.add(ring)
       const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, isActive ? 2.2 : 1.4, 8), new THREE.MeshStandardMaterial({ color: baseColor, emissive: baseColor, emissiveIntensity: isActive ? 0.4 : 0.15 }))
-      pole.position.set(p.x, y + (isActive ? 1.3 : 0.9), p.z)
-      g.add(pole)
+      pole.position.set(0, isActive ? 1.3 : 0.9, 0)
+      group.add(pole)
+      group.position.set(p.x, y, p.z)
+      group.userData.siteId = site.id
+      g.add(group)
+      scienceMeshesRef.current.push({ id: site.id, obj: group })
     }
   }, [scienceSites, activeSiteId, logs, bounds, dem, traverse, siteKey])
 
