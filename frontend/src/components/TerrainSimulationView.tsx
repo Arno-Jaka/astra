@@ -130,31 +130,53 @@ async function fetchDemTileOnce(b: Bounds, width = 128, height = 128): Promise<F
 }
 
 async function fetchDemTile(b: Bounds): Promise<{ data: Float32Array; w: number; h: number; b: Bounds } | null> {
-  // Multi-tile (2x2) sampling for higher fidelity/coverage on prominent sites, fallback to single tile
-  try {
-    const midLon = (b.west + b.east) / 2
-    const midLat = (b.north + b.south) / 2
-    const quads: Bounds[] = [
-      { west: b.west, south: midLat, east: midLon, north: b.north },
-      { west: midLon, south: midLat, east: b.east, north: b.north },
-      { west: b.west, south: b.south, east: midLon, north: midLat },
-      { west: midLon, south: b.south, east: b.east, north: midLat },
-    ]
-    const tiles = await Promise.all(quads.map((q) => fetchDemTileOnce(q, 64, 64)))
-    if (tiles.every(Boolean)) {
-      const tw = 64, th = 64, w = 128, h = 128
-      const out = new Float32Array(w * h)
-      const place = (tile: Float32Array, ox: number, oy: number) => {
-        for (let y = 0; y < th; y++) {
-          for (let x = 0; x < tw; x++) {
-            out[(oy + y) * w + (ox + x)] = tile[y * tw + x]
-          }
+  const span = Math.max(b.east - b.west, b.north - b.south)
+  // For larger/prominent areas try 2x2 stitched DEM; for tighter areas prefer single max-res tile
+  if (span > 0.18) {
+    try {
+      const midLon = (b.west + b.east) / 2
+      const midLat = (b.north + b.south) / 2
+      const quads: Bounds[] = [
+        { west: b.west, south: midLat, east: midLon, north: b.north },
+        { west: midLon, south: midLat, east: b.east, north: b.north },
+        { west: b.west, south: b.south, east: midLon, north: midLat },
+        { west: midLon, south: b.south, east: b.east, north: midLat },
+      ]
+      // stitch 4x64x64 (128x128 effective) for coverage; backend max per-tile is 128
+      const tiles = await Promise.all(quads.map((q) => fetchDemTileOnce(q, 64, 64)))
+      if (tiles.every(Boolean)) {
+        const tw = 64, th = 64, w = 128, h = 128
+        const out = new Float32Array(w * h)
+        const place = (tile: Float32Array, ox: number, oy: number) => {
+          for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) out[(oy + y) * w + (ox + x)] = tile[y * tw + x]
         }
+        place(tiles[0]!, 0, 0); place(tiles[1]!, tw, 0); place(tiles[2]!, 0, th); place(tiles[3]!, tw, th)
+        return { data: out, w, h, b }
       }
-      place(tiles[0]!, 0, 0); place(tiles[1]!, tw, 0); place(tiles[2]!, 0, th); place(tiles[3]!, tw, th)
-      return { data: out, w, h, b }
-    }
-  } catch {}
+    } catch {}
+  } else {
+    // tighter areas: try higher-detail 2x2 of 64x64 over same bounds for smoother contours
+    try {
+      const midLon = (b.west + b.east) / 2
+      const midLat = (b.north + b.south) / 2
+      const quads: Bounds[] = [
+        { west: b.west, south: midLat, east: midLon, north: b.north },
+        { west: midLon, south: midLat, east: b.east, north: b.north },
+        { west: b.west, south: b.south, east: midLon, north: midLat },
+        { west: midLon, south: b.south, east: b.east, north: midLat },
+      ]
+      const tiles = await Promise.all(quads.map((q) => fetchDemTileOnce(q, 64, 64)))
+      if (tiles.every(Boolean)) {
+        const tw = 64, th = 64, w = 128, h = 128
+        const out = new Float32Array(w * h)
+        const place = (tile: Float32Array, ox: number, oy: number) => {
+          for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) out[(oy + y) * w + (ox + x)] = tile[y * tw + x]
+        }
+        place(tiles[0]!, 0, 0); place(tiles[1]!, tw, 0); place(tiles[2]!, 0, th); place(tiles[3]!, tw, th)
+        return { data: out, w, h, b }
+      }
+    } catch {}
+  }
   const data = await fetchDemTileOnce(b, 128, 128)
   return data ? { data, w: 128, h: 128, b } : null
 }
@@ -820,6 +842,7 @@ export default function TerrainSimulationView() {
   }, [traverse, bounds, dem, siteKey])
 
   // Render science site markers in 3D
+  const promptSiteId = useScienceStore((s) => s.promptSiteId)
   useEffect(() => {
     const w = worldRef.current
     if (!w || !bounds) return
@@ -831,22 +854,23 @@ export default function TerrainSimulationView() {
       const p = lonLatToLocal(site.lon, site.lat, bounds)
       const y = w.sampleTerrainY(p.x, p.z)
       const isActive = site.id === activeSiteId
+      const isPrompted = site.id === promptSiteId
       const isDone = done.has(site.id)
       const baseColor = isDone ? 0x94a3b8 : (parseInt((SCIENCE_META[site.kind]?.color ?? '#38bdf8').replace('#', ''), 16) || 0x38bdf8)
       const group = new THREE.Group()
-      const ring = new THREE.Mesh(new THREE.RingGeometry(isActive ? 1.0 : 0.7, isActive ? 1.6 : 1.1, 28), new THREE.MeshBasicMaterial({ color: baseColor, transparent: true, opacity: isDone ? 0.35 : 0.7, side: THREE.DoubleSide }))
+      const ring = new THREE.Mesh(new THREE.RingGeometry(isActive || isPrompted ? 1.0 : 0.7, isActive || isPrompted ? 1.7 : 1.1, 28), new THREE.MeshBasicMaterial({ color: baseColor, transparent: true, opacity: isDone ? 0.35 : (isPrompted ? 0.85 : 0.7), side: THREE.DoubleSide }))
       ring.rotation.x = -Math.PI / 2
       ring.position.set(0, 0.18, 0)
       group.add(ring)
-      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, isActive ? 2.2 : 1.4, 8), new THREE.MeshStandardMaterial({ color: baseColor, emissive: baseColor, emissiveIntensity: isActive ? 0.4 : 0.15 }))
-      pole.position.set(0, isActive ? 1.3 : 0.9, 0)
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(isPrompted ? 0.08 : 0.06, isPrompted ? 0.08 : 0.06, isActive || isPrompted ? 2.4 : 1.4, 8), new THREE.MeshStandardMaterial({ color: baseColor, emissive: baseColor, emissiveIntensity: isActive || isPrompted ? 0.5 : 0.15 }))
+      pole.position.set(0, isActive || isPrompted ? 1.4 : 0.9, 0)
       group.add(pole)
       group.position.set(p.x, y, p.z)
       group.userData.siteId = site.id
       g.add(group)
       scienceMeshesRef.current.push({ id: site.id, obj: group })
     }
-  }, [scienceSites, activeSiteId, logs, bounds, dem, traverse, siteKey])
+  }, [scienceSites, activeSiteId, promptSiteId, logs, bounds, dem, traverse, siteKey])
 
   return (
     <div className="absolute inset-0 h-full w-full">
