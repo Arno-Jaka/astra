@@ -5,7 +5,6 @@ import {
   Cartesian3,
   Cartographic,
   Color,
-  ColorBlendMode,
   ConstantPositionProperty,
   ConstantProperty,
   EllipsoidTerrainProvider,
@@ -81,11 +80,9 @@ import { advanceCrash, bodySupport, terrainSupport, topplesAtCliff, type CrashBo
 import { createDriveSurface } from './driveSurface'
 import { declutterLabels } from './labelLayout'
 import { createWheelDust } from './wheelDust'
-import { createWeatherFx, type WeatherFx } from './weatherFx'
+import { createSandstormFx, type SandstormFx } from './sandstormFx'
 import { createMolaTerrainProvider } from './terrain'
 import { MARS, MOLA_SHADE, VIKING, createTrekProvider } from './trek'
-import EnvironmentOverlay from './EnvironmentOverlay'
-import { useWeatherStore, weatherElapsedS } from '../store/weatherStore'
 
 /** Lift the rover origin (wheel plane) this far above the sampled ground. */
 const ROVER_GROUND_CLEARANCE = 0.03
@@ -430,19 +427,8 @@ export default function CesiumMap() {
     }
     viewer.scene.backgroundColor = Color.fromCssColorString('#120b08')
 
-    // Visible, illustrative surface weather. It follows the active asset and
-    // is independent of the derived regional screening values.
-    const weatherFx: WeatherFx = createWeatherFx(viewer)
-    const weatherModelColor = new Color(1, 1, 1, 1)
-    const applyWeatherTint = (model: Model) => {
-      const tint = weatherFx.tint
-      weatherModelColor.red = tint.color[0]
-      weatherModelColor.green = tint.color[1]
-      weatherModelColor.blue = tint.color[2]
-      model.colorBlendMode = ColorBlendMode.MIX
-      model.color = weatherModelColor
-      model.colorBlendAmount = tint.amount
-    }
+    // Sandstorm particle effect (visual only).
+    const sandstormFx: SandstormFx = createSandstormFx(viewer)
 
     viewer.camera.setView({
       destination: Cartesian3.fromDegrees(77.7, 18.4, 10_000_000, MARS),
@@ -577,7 +563,6 @@ export default function CesiumMap() {
     let promptCooldownUntil = 0
     let lastWorkPush = 0
     let parkedSev: Model | null = null
-    let roverHeading = 0
 
     /** Drop the field crew and its dev-only debug handle together. */
     const destroyScienceCrew = () => {
@@ -614,11 +599,6 @@ export default function CesiumMap() {
       }
       // The weather layer advances with the render clock, even when no asset
       // is moving, so an event can fade in before the drive starts.
-      const weather = useWeatherStore.getState()
-      weather.tick(now)
-      weatherFx.update(now, weather.kind, weatherElapsedS(weather.startedAt, now))
-      if (scoutModel?.ready) applyWeatherTint(scoutModel)
-      if (parkedSev?.ready) applyWeatherTint(parkedSev)
     })
 
     const destroyChaseControls = () => {
@@ -647,8 +627,6 @@ export default function CesiumMap() {
       scienceFramePrev = 0
       useScienceStore.getState().endScience()
       scanSeconds = 0
-      roverHeading = 0
-      weatherFx.clearAnchor()
       wheelDust?.destroy()
       wheelDust = null
       driveSurface?.destroy()
@@ -842,7 +820,6 @@ export default function CesiumMap() {
       const now = performance.now()
       const controls = useDriveStore.getState()
       if (surfaceCrew && (!controls.active || controls.missionPhase === 'rover-approach')) {
-        surfaceCrew.setWeather(weatherFx.rollForHeading(roverHeading), weatherFx.tint)
         surfaceCrew.update(document.hidden || controls.paused ? 0 : Math.min(0.1, (now - crewIdleTime) / 1000), 0)
       }
       crewIdleTime = now
@@ -1313,7 +1290,6 @@ export default function CesiumMap() {
         let destinationSideM = 0
         let lateralM = 0
         const startSample = sampleRoute(traverse, initialT)
-        roverHeading = startSample.bearing
         useDriveStore.getState().update({ totalKm: traverse.distance_km })
         const dangers = hazardous ? hazardous.dangers : (route.dangers ?? [])
         viewer.entities.add({
@@ -1700,7 +1676,6 @@ export default function CesiumMap() {
             if (token !== scoutToken || !crew) { crew?.destroy(); return }
             scienceCrew = crew
             if (import.meta.env.DEV) (globalThis as unknown as Record<string, unknown>).__astraScienceCrew = crew
-            crew.setWeather(weatherFx.rollForHeading(bearing), weatherFx.tint)
             crew.spawn(parkSample, site, SCIENCE_META[site.kind].durationS)
             useDriveStore.getState().update({ loading: false })
             chaseActive = false
@@ -1747,7 +1722,6 @@ export default function CesiumMap() {
               }
 
               if (useScienceStore.getState().phase === 'boarding') scienceCrew.board()
-              scienceCrew.setWeather(weatherFx.rollForHeading(bearing), weatherFx.tint)
               scienceCrew.update(dt)
 
               const active = useScienceStore.getState()
@@ -1841,7 +1815,6 @@ export default function CesiumMap() {
             // The crew walks at the assumed pace. The suit/equipment allowance is
             // a planning-time factor for the EVA estimate, not a walking-speed cut.
             const pace = route.crew_estimate?.profile?.pace_m_s ?? 0.5
-            surfaceCrew.setWeather(weatherFx.rollForHeading(bearing), weatherFx.tint)
             surfaceCrew.update(dt, pace)
             if (surfaceCrew.mode === 'hold') {
               if (assignment.vehicle === 'rover') {
@@ -1857,7 +1830,6 @@ export default function CesiumMap() {
             lastT = surfaceCrew.fraction
             const sample = sampleRoute(traverse, lastT)
             const ground = groundAt(sample, corridor)
-            weatherFx.setAnchor(Cartesian3.fromDegrees(sample.lon, sample.lat, ground, MARS))
             // Stop the final approach if newly rendered terrain exceeds the crew limit.
             const ahead = sampleRoute(traverse, Math.min(1, lastT + 0.001 / Math.max(totalKm, 0.001)))
             const grade = Math.abs(CesiumMath.toDegrees(Math.atan2(groundAt(ahead, corridor) - ground,
@@ -1977,10 +1949,7 @@ export default function CesiumMap() {
               0,
             )
             scoutModel.modelMatrix = Matrix4.multiplyByTranslation(matrix, new Cartesian3(0, 0, -1), new Matrix4())
-            applyWeatherTint(scoutModel)
           }
-          weatherFx.setAnchor(position)
-          roverHeading = bearing
           const scout = viewer.entities.getById('astra-scout')
           if (scout) scout.position = new ConstantPositionProperty(position)
 
@@ -2185,7 +2154,7 @@ export default function CesiumMap() {
           // normal keeps the nose/tail corners from digging into the hill.
           const clearance =
             ROVER_GROUND_CLEARANCE + (1 - up.z) * TILT_CLEARANCE_M
-          const weatherRoll = weatherFx.rollForHeading(bearing)
+          const weatherRoll = 0
           if (scoutModel) {
             let matrix = roverMatrix(
               position,
@@ -2207,11 +2176,8 @@ export default function CesiumMap() {
               matrix = roverMatrix(position, bearing, up, tiltSmooth, clearance, weatherRoll)
             }
             scoutModel.modelMatrix = matrix
-            applyWeatherTint(scoutModel)
             wheelDust?.update(matrix, velocityMps)
           }
-          weatherFx.setAnchor(position)
-          roverHeading = bearing
           const scout = viewer.entities.getById('astra-scout')
           if (scout) scout.position = new ConstantPositionProperty(position)
 
@@ -2647,6 +2613,7 @@ export default function CesiumMap() {
 
     // Regional screening zones load asynchronously; regenerate the sites when
     // they arrive so clusters anchor to named Mars regions.
+    void useEnvironmentStore.getState().load()
     let subscribedZoneCount = useEnvironmentStore.getState().zones.length
     const unsubscribeEnvironment = useEnvironmentStore.subscribe((state) => {
       if (state.zones.length === subscribedZoneCount) return
@@ -2701,8 +2668,6 @@ export default function CesiumMap() {
     if (import.meta.env.DEV) {
       ;(globalThis as unknown as Record<string, unknown>).__astraViewer =
         viewer
-      ;(globalThis as unknown as Record<string, unknown>).__astraWeather =
-        weatherFx
       ;(globalThis as unknown as Record<string, unknown>).__astraProbe = (
         lon: number,
         lat: number,
@@ -2736,10 +2701,9 @@ export default function CesiumMap() {
       for (const entity of siteEntities) {
         viewer.entities.remove(entity)
       }
-      weatherFx.destroy()
+      sandstormFx.destroy()
       if (import.meta.env.DEV) {
         delete (globalThis as unknown as Record<string, unknown>).__astraViewer
-        delete (globalThis as unknown as Record<string, unknown>).__astraWeather
         delete (globalThis as unknown as Record<string, unknown>).__astraProbe
         delete (globalThis as unknown as Record<string, unknown>).__astraScout
         delete (globalThis as unknown as Record<string, unknown>).__astraChase
@@ -2767,7 +2731,6 @@ export default function CesiumMap() {
       <SciencePanel />
       <ScienceToast />
       {mapViewer && !mapViewer.isDestroyed() && <MapExplorer viewer={mapViewer} />}
-      {mapViewer && !mapViewer.isDestroyed() && <EnvironmentOverlay viewer={mapViewer} />}
       <div className="pointer-events-none fixed bottom-[92px] left-1/2 z-20 flex -translate-x-1/2">
         <button type="button" onClick={toGlobeView} className="pointer-events-auto rounded-full border border-white/20 bg-neutral-950/80 px-3 py-1.5 text-[11px] font-medium text-neutral-100 shadow-lg backdrop-blur hover:bg-white/10">
           Globe view

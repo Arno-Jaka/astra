@@ -2,7 +2,6 @@ import { Cartesian3, Color, ColorBlendMode, HeadingPitchRoll, Matrix4, Model, Mo
 import { MARS } from './trek'
 import { approachSpeedMps, CREW_FORWARD_HEADING_OFFSET, JUMP_DURATION, jumpHeight, MARS_GAIT_RATE } from './crewMission'
 import { sampleRoute, totalDistanceKm, type RouteSample, type TraversableRoute } from './routePath'
-import type { WeatherTint } from '../store/weatherEngine'
 
 export const CREW_ASSETS = [
   { name: 'Finn', url: new URL('../3D _assets/Astronaut_FinnTheFrog.gltf', import.meta.url).href },
@@ -88,7 +87,6 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
   let stopped = false
   let leadProgress = 0
   let mode: 'exit' | 'hold' | 'walk' | 'complete' = 'exit'
-  // Simulated-weather response: body roll in the wind and a dust/ice wash.
   let weatherRoll = 0
   let weatherTintAmount = 0
   const weatherColor = new Color(1, 1, 1, 1)
@@ -142,14 +140,13 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
     /** Visual speed of the on-screen final approach (m/s). */
     get speedMps() { return approachSpeed },
     stop() { stopped = true; for (const member of members) member.hop = -1 },
-    /** Wind lean (body roll, radians) and dust/ice colour wash from the
-     *  simulated weather layer. Applied to every crew member's pose. */
-    setWeather(rollRad: number, tint: WeatherTint) {
-      weatherRoll = rollRad
-      weatherTintAmount = tint.amount
-      weatherColor.red = tint.color[0]
-      weatherColor.green = tint.color[1]
-      weatherColor.blue = tint.color[2]
+    /** Weather response disabled; kept for compatibility. */
+    setWeather(_rollRad = 0, _tint?: unknown) {
+      weatherRoll = 0
+      weatherTintAmount = 0
+      weatherColor.red = 1
+      weatherColor.green = 1
+      weatherColor.blue = 1
     },
     walk() { mode = 'walk' },
     jump() {

@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import ChatPanel, { type ChatMessage } from './components/ChatPanel'
 import ConditionsCard from './components/ConditionsCard'
-import EnvironmentPanel from './components/EnvironmentPanel'
 import RoutePanel from './components/RoutePanel'
 import SurvivalBriefingPanel from './components/SurvivalBriefingPanel'
 import CesiumMap from './map/CesiumMap'
@@ -106,11 +105,6 @@ export default function App() {
       </FloatingPanel>
 
       <main>
-        <FloatingPanel id="environment" title="Weather & radiation" width={340} initial={{ left: 16, top: 72 }}>
-          <div className="max-h-[32vh] overflow-auto">
-            <EnvironmentPanel />
-          </div>
-        </FloatingPanel>
         <FloatingPanel id="console" title="Mission console" width={420} initial={{ left: 16, bottom: 16 }}>
           <ChatPanel
             messages={messages}

@@ -14,7 +14,6 @@ import { bearingRad, type RouteSample } from './routePath'
 import { CREW_FORWARD_HEADING_OFFSET, JUMP_DURATION } from './crewMission'
 import { CREW_ASSETS } from './surfaceCrew'
 import { distanceMeters, offsetLonLat, type LonLat, type ScienceSite } from './scienceSites'
-import type { WeatherTint } from '../store/weatherEngine'
 
 type Pose = 'Idle' | 'Walk' | 'Jump' | 'Jump_Idle' | 'Jump_Land' | 'Duck'
 type Mode = 'off' | 'exit' | 'travel' | 'work' | 'done' | 'board'
@@ -223,12 +222,12 @@ export async function createScienceCrew(
         member.clip = null
       }
     },
-    setWeather(rollRad: number, tint: WeatherTint) {
-      weatherRoll = rollRad
-      weatherTintAmount = tint.amount
-      weatherColor.red = tint.color[0]
-      weatherColor.green = tint.color[1]
-      weatherColor.blue = tint.color[2]
+    setWeather(_rollRad = 0, _tint?: unknown) {
+      weatherRoll = 0
+      weatherTintAmount = 0
+      weatherColor.red = 1
+      weatherColor.green = 1
+      weatherColor.blue = 1
     },
     update(dt: number) {
       if (disposed || members.length === 0 || members.some(member => !member.model.ready)) return

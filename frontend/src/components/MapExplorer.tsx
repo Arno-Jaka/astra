@@ -4,8 +4,6 @@ import SelectionRings from './SelectionRings'
 import SiteSearch from './SiteSearch'
 import { MARS } from '../map/trek'
 import { useAppStore } from '../store/appStore'
-import { ENVIRONMENT_ENTITY_PREFIX } from '../store/environmentMeta'
-import { WEATHER_ENTITY_PREFIX } from '../store/weatherEngine'
 import { SCIENCE_ENTITY_PREFIX, scienceSiteIdOf } from '../map/scienceFx'
 import { useMissionStore } from '../store/missionStore'
 import { dispatchLocalCommand, onCommand } from '../ws/commandChannel'
@@ -93,7 +91,7 @@ export default function MapExplorer({ viewer }: { viewer: Viewer }) {
     const pickVisible = (position: Cartesian2) => {
       for (const picked of viewer.scene.drillPick(position)) {
         const id = picked?.id
-        if (id instanceof Entity && (id.id.startsWith(ENVIRONMENT_ENTITY_PREFIX) || id.id.startsWith(WEATHER_ENTITY_PREFIX) || id.id.startsWith(SCIENCE_ENTITY_PREFIX))) continue
+        if (id instanceof Entity && id.id.startsWith(SCIENCE_ENTITY_PREFIX)) continue
         if (id) return id
       }
       return undefined

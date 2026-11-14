@@ -1,5 +1,3 @@
-import { useEnvironmentStore } from '../store/environmentStore'
-import { ENVIRONMENT_COLORS, ENVIRONMENT_LABELS, ENVIRONMENT_LEVELS } from '../store/environmentMeta'
 import { useLayerStore, type BaseLayerId } from '../store/layerStore'
 import FloatingPanel from './FloatingPanel'
 
@@ -30,9 +28,6 @@ export default function LayerPanel({ terrainStatus, onRetryTerrain }: {
   const setBase = useLayerStore((state) => state.setBase)
   const slope = useLayerStore((state) => state.slope)
   const toggleSlope = useLayerStore((state) => state.toggleSlope)
-  const environment = useEnvironmentStore((state) => state.visible)
-  const toggleEnvironment = useEnvironmentStore((state) => state.toggleVisible)
-  const loadEnvironment = useEnvironmentStore((state) => state.load)
 
   return (
     <FloatingPanel id="layers" title="Map layers" width={260} initial={{ right: 16, top: 16 }}>
@@ -97,43 +92,6 @@ export default function LayerPanel({ terrainStatus, onRetryTerrain }: {
                 />
                 <span className="text-[8px] text-neutral-500">
                   {swatch.label}
-                </span>
-              </span>
-            ))}
-          </div>
-        ) : null}
-      </div>
-
-      <div className="mt-3 border-t border-white/10 pt-2">
-        <label className="flex cursor-pointer items-start gap-2">
-          <input
-            type="checkbox"
-            checked={environment}
-            onChange={() => {
-              if (!environment) void loadEnvironment()
-              toggleEnvironment()
-            }}
-            className="mt-0.5 accent-orange-400"
-          />
-          <span className="leading-tight">
-            <span className="block text-[11px] font-medium text-neutral-100">
-              Weather &amp; radiation
-            </span>
-            <span className="block text-[9px] text-neutral-500">
-              Regional screening · derived
-            </span>
-          </span>
-        </label>
-        {environment ? (
-          <div className="mt-1.5 flex items-center gap-1.5 pl-6">
-            {ENVIRONMENT_LEVELS.map((level) => (
-              <span key={level} className="flex items-center gap-1">
-                <span
-                  className="inline-block h-2.5 w-2.5 rounded-full"
-                  style={{ backgroundColor: ENVIRONMENT_COLORS[level] }}
-                />
-                <span className="text-[8px] text-neutral-500">
-                  {ENVIRONMENT_LABELS[level]}
                 </span>
               </span>
             ))}
