@@ -185,6 +185,12 @@ export default function TerrainSimulationView() {
     return () => { cancelled = true }
   }, [bounds?.west, bounds?.south, bounds?.east, bounds?.north])
 
+  const paused = useDriveStore((s) => s.paused)
+  const speedMps = useDriveStore((s) => s.speedMps)
+  const warning = useDriveStore((s) => s.warning)
+  const jumpRequested = useDriveStore((s) => s.jumpRequested)
+  const jetRequested = useDriveStore((s) => s.jetRequested)
+
   const stateRef = useRef({
     traverse: null as any,
     bounds: null as Bounds | null,
@@ -196,6 +202,11 @@ export default function TerrainSimulationView() {
     missionPhase: 'aboard' as string,
     crash: null as any,
     braking: false,
+    paused: false,
+    speedMps: 0,
+    warning: null as string | null,
+    jumpRequested: false,
+    jetRequested: false,
     scienceSites: [] as any[],
     activeSiteId: null as string | null,
     sciencePhase: 'off' as string,
@@ -203,7 +214,8 @@ export default function TerrainSimulationView() {
   })
   stateRef.current = {
     traverse, bounds, previewT, active, driveDistanceKm, driveTotalKm, vehicle,
-    missionPhase, crash, braking, scienceSites, activeSiteId, sciencePhase,
+    missionPhase, crash, braking, paused, speedMps, warning, jumpRequested, jetRequested,
+    scienceSites, activeSiteId, sciencePhase,
     doneIds: new Set(logs.map((l) => l.siteId)),
   }
 
@@ -536,6 +548,9 @@ export default function TerrainSimulationView() {
     const clock = new THREE.Clock()
     let first = true
     let animId = 0
+    let jumpT = -1
+    let jetT = -1
+    let bob = 0
     const animate = () => {
       animId = requestAnimationFrame(animate)
       const dt = clock.getDelta()
@@ -547,7 +562,10 @@ export default function TerrainSimulationView() {
           try {
             const s = sampleRoute(st.traverse as any, t)
             const p = lonLatToLocal(s.lon, s.lat, st.bounds)
-            const y = w.sampleTerrainY(p.x, p.z)
+            // multi-point DEM contact sampling (approx wheel/contact adherence to contours)
+            const offsets = [[0, 0], [0.9, 0.7], [0.9, -0.7], [-0.9, 0.7], [-0.9, -0.7]]
+            let y = -Infinity
+            for (const [ox, oz] of offsets) y = Math.max(y, w.sampleTerrainY(p.x + ox, p.z + oz))
             const ahead = sampleRoute(st.traverse as any, Math.min(1, t + 0.002))
             const ap = lonLatToLocal(ahead.lon, ahead.lat, st.bounds)
             const ay = w.sampleTerrainY(ap.x, ap.z)
@@ -560,18 +578,37 @@ export default function TerrainSimulationView() {
             const basis = new THREE.Matrix4().makeBasis(right, up, correctedFwd)
             const q = new THREE.Quaternion().setFromRotationMatrix(basis)
 
+            // hazard-aware visual cue on DEM route (aligned with route dangers)
+            const dangers = (st.traverse as any).dangers ?? []
+            let nearHazard = false
+            for (const danger of dangers) {
+              const dp = lonLatToLocal(danger.lon, danger.lat, st.bounds)
+              if (Math.hypot(dp.x - p.x, dp.z - p.z) < 2.2) { nearHazard = true; break }
+            }
+            const hazardActive = nearHazard || !!st.warning
+            w.marker.material = new THREE.MeshStandardMaterial({ color: hazardActive ? 0xf97316 : 0x22d3ee, emissive: hazardActive ? 0x7c2d12 : 0x0b4f5a, roughness: 0.4 })
             w.marker.position.set(p.x, y + 1.1, p.z)
             w.marker.visible = true
-            // contact-aligned placement on DEM contour surface
-            w.vehicleObj.position.set(p.x, y + 0.28, p.z)
+
+            // speed/braking/pausing response (visual dynamics on contour surface)
+            const moving = st.active && !st.paused && st.speedMps > 0.02 && !st.crash
+            bob += dt * (moving ? 6 + Math.min(6, st.speedMps * 0.8) : 2)
+            const bobAmt = moving ? Math.sin(bob) * 0.03 : 0
+            const brakeDip = st.braking ? -0.05 : 0
+            w.vehicleObj.position.set(p.x, y + 0.28 + bobAmt + brakeDip, p.z)
             w.vehicleObj.quaternion.copy(q)
+            if (st.braking) w.vehicleObj.rotateX(0.04)
             w.vehicleObj.visible = st.missionPhase === 'aboard' || st.missionPhase === 'rover-approach' || st.missionPhase === 'complete' || st.missionPhase === 'hold' || st.active || t >= 0
 
-            // simple crash/jump visual cues on DEM-aligned pose
+            // jump/jet/crash responses (animated, on DEM-aligned pose)
+            if (st.jumpRequested && jumpT < 0) { jumpT = 0; useDriveStore.setState({ jumpRequested: false }) }
+            if (st.jetRequested && jumpT < 0) { jetT = 0; useDriveStore.setState({ jetRequested: false }) }
+            if (jumpT >= 0) { jumpT += dt; const j = Math.sin(Math.min(1, jumpT / 0.7) * Math.PI); w.vehicleObj.position.y += j * 1.1; if (jumpT > 0.7) jumpT = -1 }
+            if (jetT >= 0) { jetT += dt; w.vehicleObj.position.y += Math.min(1, jetT / 0.8) * 2.2; if (jetT > 1.2) jetT = -1 }
             if (st.crash) {
               if (st.crash.type === 'rollover') w.vehicleObj.rotateZ(1.2)
               if (st.crash.type === 'fall') w.vehicleObj.position.y -= 0.8
-              if (st.crash.type === 'jet') w.vehicleObj.position.y += 2.5
+              if (st.crash.type === 'jet' && jetT < 0) w.vehicleObj.position.y += 1.6
             }
 
             // crew placement on DEM surface (simplified state-driven behavior)
