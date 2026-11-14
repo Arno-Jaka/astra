@@ -515,6 +515,18 @@ export default function TerrainSimulationView() {
       drawRoute(traverse.coordinates as [number, number][], 0x22d3ee, 0.9)
       drawDangers((traverse as any).dangers ?? [], false)
     }
+    // start/end markers on DEM surface for route context/sync
+    if (route && bounds) {
+      const endpoints: { coord: [number, number]; color: number }[] = []
+      if (route.coordinates?.length) { endpoints.push({ coord: route.coordinates[0] as [number, number], color: 0x22c55e }); endpoints.push({ coord: route.coordinates[route.coordinates.length - 1] as [number, number], color: 0xef4444 }) }
+      for (const ep of endpoints) {
+        const p = lonLatToLocal(ep.coord[0], ep.coord[1], bounds)
+        const y = sampleTerrainY(p.x, p.z)
+        const m = new THREE.Mesh(new THREE.CylinderGeometry(0.0, 0.5, 1.4, 12), new THREE.MeshStandardMaterial({ color: ep.color, emissive: ep.color, emissiveIntensity: 0.25 }))
+        m.position.set(p.x, y + 0.7, p.z)
+        scene.add(m)
+      }
+    }
 
     const marker = new THREE.Mesh(new THREE.SphereGeometry(0.8, 18, 18), new THREE.MeshStandardMaterial({ color: 0x22d3ee, emissive: 0x0b4f5a, roughness: 0.4 }))
     marker.castShadow = true
@@ -755,6 +767,10 @@ export default function TerrainSimulationView() {
             }
 
             if (first) { w.target.set(p.x, y + 1.5, p.z); first = false }
+            else if (st.active || st.missionPhase !== 'aboard') {
+              // gentle follow toward vehicle on DEM surface
+              w.target.lerp(new THREE.Vector3(p.x, y + 1.2, p.z), 1 - Math.exp(-1.5 * dt))
+            }
           } catch { w.marker.visible = false }
         } else {
           w.marker.visible = false
