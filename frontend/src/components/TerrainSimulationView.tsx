@@ -594,10 +594,17 @@ export default function TerrainSimulationView() {
           try {
             const s = sampleRoute(st.traverse as any, t)
             const p = lonLatToLocal(s.lon, s.lat, st.bounds)
-            // multi-point DEM contact sampling (approx wheel/contact adherence to contours)
-            const offsets = [[0, 0], [0.9, 0.7], [0.9, -0.7], [-0.9, 0.7], [-0.9, -0.7]]
+            // multi-point DEM contact sampling in vehicle-local frame (wheel/contact adherence to contours)
+            const hd = -s.bearing
+            const fx = Math.sin(hd), fz = Math.cos(hd)
+            const rx = Math.cos(hd), rz = -Math.sin(hd)
+            const offsets = [[0, 0], [1.1, 0.7], [1.1, -0.7], [-1.1, 0.7], [-1.1, -0.7]]
             let y = -Infinity
-            for (const [ox, oz] of offsets) y = Math.max(y, w.sampleTerrainY(p.x + ox, p.z + oz))
+            for (const [oF, oR] of offsets) {
+              const ox = fx * oF + rx * oR
+              const oz = fz * oF + rz * oR
+              y = Math.max(y, w.sampleTerrainY(p.x + ox, p.z + oz))
+            }
             const ahead = sampleRoute(st.traverse as any, Math.min(1, t + 0.002))
             const ap = lonLatToLocal(ahead.lon, ahead.lat, st.bounds)
             const ay = w.sampleTerrainY(ap.x, ap.z)
@@ -617,10 +624,17 @@ export default function TerrainSimulationView() {
               const dp = lonLatToLocal(danger.lon, danger.lat, st.bounds)
               if (Math.hypot(dp.x - p.x, dp.z - p.z) < 2.2) { nearHazard = true; break }
             }
-            const hazardActive = nearHazard || !!st.warning
-            w.marker.material = new THREE.MeshStandardMaterial({ color: hazardActive ? 0xf97316 : 0x22d3ee, emissive: hazardActive ? 0x7c2d12 : 0x0b4f5a, roughness: 0.4 })
+            const steep = Math.abs(s.gradeDeg ?? 0) > 10
+            const hazardActive = nearHazard || !!st.warning || steep
+            const pulse = 1 + (hazardActive ? Math.sin(clock.elapsedTime * 8) * 0.18 : 0)
+            w.marker.scale.setScalar(pulse)
+            w.marker.material = new THREE.MeshStandardMaterial({ color: hazardActive ? 0xf97316 : 0x22d3ee, emissive: hazardActive ? 0x7c2d12 : 0x0b4f5a, roughness: 0.4, emissiveIntensity: hazardActive ? 0.7 : 0.3 })
             w.marker.position.set(p.x, y + 1.1, p.z)
             w.marker.visible = true
+
+            // pulse hazard markers for visibility/sync
+            const hp = 1 + Math.sin(clock.elapsedTime * 3) * 0.06
+            w.hazardGroup.children.forEach((c, idx) => { if (idx % 2 === 0) c.scale.setScalar(hp) })
 
             // speed/braking/pausing response (visual dynamics on contour surface)
             const moving = st.active && !st.paused && st.speedMps > 0.02 && !st.crash
@@ -654,7 +668,6 @@ export default function TerrainSimulationView() {
               const phase = st.sciencePhase !== 'off' ? st.sciencePhase : st.missionPhase
               const bnd = st.bounds
               const bp = lonLatToLocal(baseLon, baseLat, bnd)
-              // vehicle-relative anchor on DEM surface for disembark/return phases
               const vp = lonLatToLocal(s.lon, s.lat, bnd)
               const setClip = (actorIdx: number, name: string) => {
                 const actor = w.crewActors[actorIdx]
@@ -672,23 +685,33 @@ export default function TerrainSimulationView() {
                 const child = w.crewGroup.children[i] as THREE.Object3D
                 let tx = bp.x, tz = bp.z, face = -s.bearing, clip = 'Walk'
                 const ang = (i / Math.max(1, w.crewGroup.children.length)) * Math.PI * 2
-                if (phase === 'disembarking') { tx = vp.x + (i - 1) * 0.12; tz = vp.z + 0.18 + i * 0.06; clip = 'Walk' }
-                else if (phase === 'crew-approach' || phase === 'approach' || phase === 'travelling') { tx = bp.x + (i - 1) * 0.1; tz = bp.z + 0.25 + i * 0.05; clip = 'Walk' }
-                else if (phase === 'working' || phase === 'science') { tx = bp.x + Math.cos(ang) * 0.16; tz = bp.z + Math.sin(ang) * 0.16; face = ang + Math.PI; clip = w.crewActors[i]?.actions['Duck'] ? 'Duck' : 'Idle' }
-                else if (phase === 'done') { tx = bp.x + Math.cos(ang) * 0.14; tz = bp.z + Math.sin(ang) * 0.14; face = ang; clip = 'Idle' }
-                else if (phase === 'rover-approach' || phase === 'boarding') { tx = vp.x + (i - 1) * 0.1; tz = vp.z + 0.12 + (2 - i) * 0.05; clip = 'Walk' }
-                else { tx = vp.x + (i - 1) * 0.1; tz = vp.z + 0.2 + i * 0.05; clip = 'Idle' }
+                const side = (i - 1) * 0.11
+                if (phase === 'disembarking') { tx = vp.x + side; tz = vp.z + 0.14 + i * 0.05; clip = 'Walk' }
+                else if (phase === 'crew-approach' || phase === 'approach' || phase === 'travelling') {
+                  // interpolate along ground from vehicle toward active site for locomotion on DEM surface
+                  const k = (phase === 'travelling' || phase === 'approach') ? 0.85 : 0.55
+                  tx = vp.x + (bp.x - vp.x) * k + side * 0.6
+                  tz = vp.z + (bp.z - vp.z) * k + 0.18 + i * 0.04
+                  face = Math.atan2(-(bp.x - vp.x), (bp.z - vp.z))
+                  clip = 'Walk'
+                }
+                else if (phase === 'working' || phase === 'science') { tx = bp.x + Math.cos(ang) * 0.15; tz = bp.z + Math.sin(ang) * 0.15; face = ang + Math.PI; clip = w.crewActors[i]?.actions['Duck'] ? 'Duck' : 'Idle' }
+                else if (phase === 'done') { tx = bp.x + Math.cos(ang) * 0.13; tz = bp.z + Math.sin(ang) * 0.13; face = ang; clip = 'Idle' }
+                else if (phase === 'rover-approach' || phase === 'boarding') { tx = vp.x + side; tz = vp.z + 0.1 + (2 - i) * 0.04; face = Math.atan2(-(vp.x - bp.x), (vp.z - bp.z)); clip = 'Walk' }
+                else { tx = vp.x + side; tz = vp.z + 0.18 + i * 0.04; clip = 'Idle' }
                 if (!crewPos[i]) crewPos[i] = { x: tx, z: tz, init: true }
                 const cp = crewPos[i]
                 if (!cp.init) { cp.x = tx; cp.z = tz; cp.init = true }
-                const speed = (phase === 'working' || phase === 'done' || phase === 'science') ? 0.6 : 1.4
+                const speed = (phase === 'working' || phase === 'done' || phase === 'science') ? 0.7 : 1.6
                 const lerp = 1 - Math.exp(-speed * dt)
                 cp.x += (tx - cp.x) * lerp
                 cp.z += (tz - cp.z) * lerp
-                const movingNow = Math.hypot(tx - cp.x, tz - cp.z) > 0.03
-                if (movingNow && (clip === 'Idle' || clip === 'Duck') && (phase === 'crew-approach' || phase === 'travelling' || phase === 'disembarking' || phase === 'rover-approach' || phase === 'boarding')) clip = 'Walk'
+                const movingNow = Math.hypot(tx - cp.x, tz - cp.z) > 0.02
+                if (movingNow && (clip === 'Idle' || clip === 'Duck') && (phase === 'crew-approach' || phase === 'travelling' || phase === 'approach' || phase === 'disembarking' || phase === 'rover-approach' || phase === 'boarding')) clip = 'Walk'
+                const hop = (movingNow && (phase === 'crew-approach' || phase === 'travelling' || phase === 'approach' || phase === 'disembarking' || phase === 'rover-approach' || phase === 'boarding'))
+                  ? Math.abs(Math.sin(clock.elapsedTime * (3.2 + i * 0.35) + i)) * 0.06 : 0
                 const cy = w.sampleTerrainY(cp.x, cp.z)
-                child.position.set(cp.x, cy, cp.z)
+                child.position.set(cp.x, cy + hop, cp.z)
                 child.rotation.y = face
                 setClip(i, clip)
               }
