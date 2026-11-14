@@ -620,13 +620,23 @@ export default function TerrainSimulationView() {
             const hd = -s.bearing
             const fx = Math.sin(hd), fz = Math.cos(hd)
             const rx = Math.cos(hd), rz = -Math.sin(hd)
-            const offsets = [[0, 0], [1.1, 0.7], [1.1, -0.7], [-1.1, 0.7], [-1.1, -0.7]]
+            const contacts: [number, number, number][] = []
+            const offsets = [[0, 0], [1.15, 0.75], [1.15, -0.75], [-1.15, 0.75], [-1.15, -0.75]]
             let y = -Infinity
             for (const [oF, oR] of offsets) {
               const ox = fx * oF + rx * oR
               const oz = fz * oF + rz * oR
-              y = Math.max(y, w.sampleTerrainY(p.x + ox, p.z + oz))
+              const hy = w.sampleTerrainY(p.x + ox, p.z + oz)
+              contacts.push([oF, oR, hy])
+              y = Math.max(y, hy)
             }
+            // approximate suspension/roll-pitch correction from contact spread on DEM
+            const left = contacts.filter(c => c[1] > 0).reduce((a,c)=>a+c[2],0)/2
+            const rightC = contacts.filter(c => c[1] < 0).reduce((a,c)=>a+c[2],0)/2
+            const front = contacts.filter(c => c[0] > 0).reduce((a,c)=>a+c[2],0)/2
+            const rear = contacts.filter(c => c[0] < 0).reduce((a,c)=>a+c[2],0)/2
+            const rollAdj = Math.atan2(rightC - left, 1.5) * 0.35
+            const pitchAdj = Math.atan2(rear - front, 2.3) * 0.25
             const ahead = sampleRoute(st.traverse as any, Math.min(1, t + 0.002))
             const ap = lonLatToLocal(ahead.lon, ahead.lat, st.bounds)
             const ay = w.sampleTerrainY(ap.x, ap.z)
@@ -666,6 +676,8 @@ export default function TerrainSimulationView() {
             w.vehicleObj.position.set(p.x, y + 0.28 + bobAmt + brakeDip, p.z)
             w.vehicleObj.quaternion.copy(q)
             if (st.braking) w.vehicleObj.rotateX(0.04)
+            w.vehicleObj.rotateZ(rollAdj)
+            w.vehicleObj.rotateX(pitchAdj)
             w.vehicleObj.visible = st.missionPhase === 'aboard' || st.missionPhase === 'rover-approach' || st.missionPhase === 'complete' || st.missionPhase === 'hold' || st.active || t >= 0
 
             // jump/jet/crash responses (animated on DEM-aligned pose; don't consume store flags so simulation stays in sync)
