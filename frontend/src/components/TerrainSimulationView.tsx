@@ -113,7 +113,7 @@ function createNoise2D(seedVal: number) {
   return { hash, fbm, ridged }
 }
 
-async function fetchDemTile(b: Bounds, width = 128, height = 128): Promise<Float32Array | null> {
+async function fetchDemTileOnce(b: Bounds, width = 128, height = 128): Promise<Float32Array | null> {
   const params = new URLSearchParams({
     west: String(b.west), south: String(b.south), east: String(b.east), north: String(b.north),
     width: String(width), height: String(height),
@@ -127,6 +127,36 @@ async function fetchDemTile(b: Bounds, width = 128, height = 128): Promise<Float
   } catch {
     return null
   }
+}
+
+async function fetchDemTile(b: Bounds): Promise<{ data: Float32Array; w: number; h: number; b: Bounds } | null> {
+  // Multi-tile (2x2) sampling for higher fidelity/coverage on prominent sites, fallback to single tile
+  try {
+    const midLon = (b.west + b.east) / 2
+    const midLat = (b.north + b.south) / 2
+    const quads: Bounds[] = [
+      { west: b.west, south: midLat, east: midLon, north: b.north },
+      { west: midLon, south: midLat, east: b.east, north: b.north },
+      { west: b.west, south: b.south, east: midLon, north: midLat },
+      { west: midLon, south: b.south, east: b.east, north: midLat },
+    ]
+    const tiles = await Promise.all(quads.map((q) => fetchDemTileOnce(q, 64, 64)))
+    if (tiles.every(Boolean)) {
+      const tw = 64, th = 64, w = 128, h = 128
+      const out = new Float32Array(w * h)
+      const place = (tile: Float32Array, ox: number, oy: number) => {
+        for (let y = 0; y < th; y++) {
+          for (let x = 0; x < tw; x++) {
+            out[(oy + y) * w + (ox + x)] = tile[y * tw + x]
+          }
+        }
+      }
+      place(tiles[0]!, 0, 0); place(tiles[1]!, tw, 0); place(tiles[2]!, 0, th); place(tiles[3]!, tw, th)
+      return { data: out, w, h, b }
+    }
+  } catch {}
+  const data = await fetchDemTileOnce(b, 128, 128)
+  return data ? { data, w: 128, h: 128, b } : null
 }
 
 function getVehicleUrl(vehicle: string | undefined) {
@@ -178,9 +208,9 @@ export default function TerrainSimulationView() {
     if (!bounds) { setDem(null); return }
     const b = bounds
     ;(async () => {
-      const data = await fetchDemTile(b, 128, 128)
+      const result = await fetchDemTile(b)
       if (cancelled) return
-      setDem(data ? { data, w: 128, h: 128, b } : null)
+      setDem(result)
     })()
     return () => { cancelled = true }
   }, [bounds?.west, bounds?.south, bounds?.east, bounds?.north])
@@ -552,9 +582,10 @@ export default function TerrainSimulationView() {
     let jumpT = -1
     let jetT = -1
     let bob = 0
+    const crewPos: { x: number; z: number; init: boolean }[] = []
     const animate = () => {
       animId = requestAnimationFrame(animate)
-      const dt = clock.getDelta()
+      const dt = Math.min(clock.getDelta(), 0.1)
       const w = worldRef.current
       if (w) {
         const st = stateRef.current
@@ -621,6 +652,10 @@ export default function TerrainSimulationView() {
               const baseLon = activeSite?.lon ?? s.lon
               const baseLat = activeSite?.lat ?? s.lat
               const phase = st.sciencePhase !== 'off' ? st.sciencePhase : st.missionPhase
+              const bnd = st.bounds
+              const bp = lonLatToLocal(baseLon, baseLat, bnd)
+              // vehicle-relative anchor on DEM surface for disembark/return phases
+              const vp = lonLatToLocal(s.lon, s.lat, bnd)
               const setClip = (actorIdx: number, name: string) => {
                 const actor = w.crewActors[actorIdx]
                 if (!actor) return
@@ -635,25 +670,31 @@ export default function TerrainSimulationView() {
               }
               for (let i = 0; i < w.crewGroup.children.length; i++) {
                 const child = w.crewGroup.children[i] as THREE.Object3D
-                let ox = 0, oz = 0
-                let face = -s.bearing
-                let clip = 'Walk'
-                if (phase === 'disembarking') { ox = (i - 1) * 1.2; oz = 1.2 + i * 0.6; clip = 'Walk' }
-                else if (phase === 'crew-approach' || phase === 'travelling' || phase === 'approach') { ox = (i - 1) * 1.4; oz = 3.2 + i * 0.7; clip = 'Walk' }
-                else if (phase === 'working' || phase === 'science') { const ang = (i / Math.max(1, w.crewGroup.children.length)) * Math.PI * 2; ox = Math.cos(ang) * 2.0; oz = Math.sin(ang) * 2.0; face = ang + Math.PI; clip = 'Duck' in (w.crewActors[i]?.actions || {}) ? 'Duck' : 'Idle' }
-                else if (phase === 'done') { const ang = (i / Math.max(1, w.crewGroup.children.length)) * Math.PI * 2; ox = Math.cos(ang) * 1.8; oz = Math.sin(ang) * 1.8; face = ang; clip = 'Idle' }
-                else if (phase === 'rover-approach' || phase === 'boarding') { ox = (i - 1) * 1.1; oz = 1.6 + (2 - i) * 0.5; clip = 'Walk' }
-                else { ox = (i - 1) * 1.3; oz = 2.2 + i * 0.6; clip = 'Idle' }
-                const b = st.bounds
-                const bp = lonLatToLocal(baseLon, baseLat, b)
-                const cx = bp.x + ox * 0.08
-                const cz = bp.z + oz * 0.08
-                const cy = w.sampleTerrainY(cx, cz)
-                child.position.set(cx, cy, cz)
+                let tx = bp.x, tz = bp.z, face = -s.bearing, clip = 'Walk'
+                const ang = (i / Math.max(1, w.crewGroup.children.length)) * Math.PI * 2
+                if (phase === 'disembarking') { tx = vp.x + (i - 1) * 0.12; tz = vp.z + 0.18 + i * 0.06; clip = 'Walk' }
+                else if (phase === 'crew-approach' || phase === 'approach' || phase === 'travelling') { tx = bp.x + (i - 1) * 0.1; tz = bp.z + 0.25 + i * 0.05; clip = 'Walk' }
+                else if (phase === 'working' || phase === 'science') { tx = bp.x + Math.cos(ang) * 0.16; tz = bp.z + Math.sin(ang) * 0.16; face = ang + Math.PI; clip = w.crewActors[i]?.actions['Duck'] ? 'Duck' : 'Idle' }
+                else if (phase === 'done') { tx = bp.x + Math.cos(ang) * 0.14; tz = bp.z + Math.sin(ang) * 0.14; face = ang; clip = 'Idle' }
+                else if (phase === 'rover-approach' || phase === 'boarding') { tx = vp.x + (i - 1) * 0.1; tz = vp.z + 0.12 + (2 - i) * 0.05; clip = 'Walk' }
+                else { tx = vp.x + (i - 1) * 0.1; tz = vp.z + 0.2 + i * 0.05; clip = 'Idle' }
+                if (!crewPos[i]) crewPos[i] = { x: tx, z: tz, init: true }
+                const cp = crewPos[i]
+                if (!cp.init) { cp.x = tx; cp.z = tz; cp.init = true }
+                const speed = (phase === 'working' || phase === 'done' || phase === 'science') ? 0.6 : 1.4
+                const lerp = 1 - Math.exp(-speed * dt)
+                cp.x += (tx - cp.x) * lerp
+                cp.z += (tz - cp.z) * lerp
+                const movingNow = Math.hypot(tx - cp.x, tz - cp.z) > 0.03
+                if (movingNow && (clip === 'Idle' || clip === 'Duck') && (phase === 'crew-approach' || phase === 'travelling' || phase === 'disembarking' || phase === 'rover-approach' || phase === 'boarding')) clip = 'Walk'
+                const cy = w.sampleTerrainY(cp.x, cp.z)
+                child.position.set(cp.x, cy, cp.z)
                 child.rotation.y = face
                 setClip(i, clip)
               }
               for (const mixer of w.crewMixers) mixer.update(dt)
+            } else {
+              for (let i = 0; i < crewPos.length; i++) crewPos[i].init = false
             }
 
             if (first) { w.target.set(p.x, y + 1.5, p.z); first = false }
