@@ -741,7 +741,10 @@ export default function TerrainSimulationView() {
                   face = Math.atan2(-(bp.x - vp.x), (bp.z - vp.z))
                   clip = 'Walk'
                 }
-                else if (phase === 'working' || phase === 'science') { tx = bp.x + Math.cos(ang) * 0.15; tz = bp.z + Math.sin(ang) * 0.15; face = ang + Math.PI; clip = w.crewActors[i]?.actions['Duck'] ? 'Duck' : 'Idle' }
+                else if (phase === 'working' || phase === 'science') {
+                  const wobble = Math.sin(clock.elapsedTime * 1.2 + i) * 0.01
+                  tx = bp.x + Math.cos(ang + wobble) * 0.15; tz = bp.z + Math.sin(ang + wobble) * 0.15; face = ang + Math.PI; clip = w.crewActors[i]?.actions['Duck'] ? 'Duck' : 'Idle'
+                }
                 else if (phase === 'done') { tx = bp.x + Math.cos(ang) * 0.13; tz = bp.z + Math.sin(ang) * 0.13; face = ang; clip = 'Idle' }
                 else if (phase === 'rover-approach' || phase === 'boarding') { tx = vp.x + side; tz = vp.z + 0.1 + (2 - i) * 0.04; face = Math.atan2(-(vp.x - bp.x), (vp.z - bp.z)); clip = 'Walk' }
                 else { tx = vp.x + side; tz = vp.z + 0.18 + i * 0.04; clip = 'Idle' }
