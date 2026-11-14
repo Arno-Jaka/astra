@@ -8,7 +8,7 @@ async function moduleUrl(path, imports = {}) {
 }
 const routePath = await moduleUrl('../src/map/routePath.ts')
 const { planCrewMission, jumpHeight, JUMP_DURATION, JUMP_SPEED, MARS_CREW_GRAVITY, formatDistance,
-  hopDuration, hopStrideM, approachSpeedMps, CREW_APPROACH_SECONDS, HOP_SPEED_FACTOR, HOP_GROUND_FACTOR, CREW_FORWARD_HEADING_OFFSET } = await import(await moduleUrl('../src/map/crewMission.ts', { './routePath': routePath }))
+  hopDuration, hopStrideM, approachSpeedMps, CREW_APPROACH_SECONDS, CREW_MIN_APPROACH_MPS, CREW_FORWARD_HEADING_OFFSET } = await import(await moduleUrl('../src/map/crewMission.ts', { './routePath': routePath }))
 const route = { distance_km: 1, coordinates: [[0, 0], [0, 0.005], [0, 0.01]], profile: [0, 0.5, 1].map(distance_km => ({ distance_km, grade_deg: 2, elevation_m: 0 })) }
 const safeSev = planCrewMission(route, 15, 'sev')
 assert.equal(safeSev.stagingT, 0.8)
@@ -51,18 +51,22 @@ assert.equal(CREW_FORWARD_HEADING_OFFSET, -Math.PI / 2)
 // Hop stride is gravity-dependent: the same impulse carries farther on Mars than on Earth.
 assert.ok(Math.abs(hopDuration(MARS_CREW_GRAVITY) - JUMP_DURATION) < 1e-12)
 assert.ok(hopStrideM(0.5, MARS_CREW_GRAVITY) > hopStrideM(0.5, 9.81), 'lower gravity gives a longer hop stride')
-assert.ok(Math.abs(hopStrideM(0.5, MARS_CREW_GRAVITY) - 0.5 * HOP_SPEED_FACTOR * JUMP_DURATION) < 1e-12)
+// Constant horizontal speed through the stride: the airborne distance is just
+// speed × air time, with no extra speed surge.
+assert.ok(Math.abs(hopStrideM(0.5, MARS_CREW_GRAVITY) - 0.5 * JUMP_DURATION) < 1e-12)
 // The on-screen approach covers its span in CREW_APPROACH_SECONDS, and each
 // bound at that speed is a long gravity stride (not a shuffle).
 assert.ok(CREW_APPROACH_SECONDS >= 10 && CREW_APPROACH_SECONDS <= 15, `approach target is 10-15 s: ${CREW_APPROACH_SECONDS}`)
 const approach = approachSpeedMps(200)
 assert.ok(Math.abs(200 / approach - CREW_APPROACH_SECONDS) < 1e-9)
 assert.ok(hopStrideM(approach, MARS_CREW_GRAVITY) > 15, `bound is a long stride: ${hopStrideM(approach, MARS_CREW_GRAVITY).toFixed(1)} m`)
-assert.ok(HOP_SPEED_FACTOR > HOP_GROUND_FACTOR, 'a bound surges ahead of the grounded glide')
+// A short standoff still moves briskly instead of slowing to a shuffle.
+assert.equal(approachSpeedMps(10), CREW_MIN_APPROACH_MPS)
+assert.ok(approachSpeedMps(10) > 10 / CREW_APPROACH_SECONDS)
 for (const name of ['FinnTheFrog', 'RaeTheRedPanda', 'FernandoTheFlamingo']) {
   const gltf = JSON.parse(await readFile(new URL(`../src/3D _assets/Astronaut_${name}.gltf`, import.meta.url), 'utf8'))
   for (const clip of ['Idle', 'Walk', 'Jump', 'Jump_Idle', 'Jump_Land']) assert.ok(gltf.animations.some(a => a.name === clip), `${name}: ${clip}`)
   assert.ok(gltf.skins.length > 0)
   assert.ok(gltf.buffers.every(b => b.uri.startsWith('data:')), 'asset is self-contained in production')
 }
-console.log('Passed: safe/hazardous parking plan (incl. null first grade), Mars ballistic hop, all three rigs and required animation clips.')
+console.log('Passed: safe/hazardous parking plan (incl. null first grade), Mars ballistic hop, constant-speed bounding with minimum approach speed, all three rigs and required animation clips.')

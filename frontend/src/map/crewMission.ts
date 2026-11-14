@@ -13,19 +13,18 @@ export const JUMP_DURATION = hopDuration(MARS_CREW_GRAVITY)
  * fast the illustrative low-gravity bound plays out, so the crew bounds to the
  * target promptly instead of plodding at the walking pace. */
 export const CREW_APPROACH_SECONDS = 10
+/** Keep even a very short standoff brisk; a floor avoids a slow shuffle when the
+ *  final approach is only a few metres. Presentation only. */
+export const CREW_MIN_APPROACH_MPS = 4.5
 /** Visual speed of the on-screen final approach (m/s): covers `spanM` in
  * CREW_APPROACH_SECONDS. Presentation only — not a suited walking speed. */
-export const approachSpeedMps = (spanM: number) => Math.max(0.1, spanM / CREW_APPROACH_SECONDS)
-/** Airborne speed of a bound, relative to the approach speed. The crew keeps a
- * long, gravity-assisted stride, so a bound carries them ahead of the base
- * glide. The stride scales with the gravity-dependent air time, so a Mars bound
- * carries farther than an Earth one. */
-export const HOP_SPEED_FACTOR = 1.15
-/** Grounded glide between bounds, relative to the approach speed. */
-export const HOP_GROUND_FACTOR = 0.85
-/** Ground covered by one bound (m); a long low-gravity stride, not a step. */
+export const approachSpeedMps = (spanM: number) =>
+  Math.max(CREW_MIN_APPROACH_MPS, spanM / CREW_APPROACH_SECONDS)
+/** Ground covered by one bound (m). The crew moves at a constant visual speed
+ * through the whole stride, so the airborne part of each bound covers this much
+ * ground — a long low-gravity leap, not a step. */
 export const hopStrideM = (speed: number, gravity: number = MARS_CREW_GRAVITY) =>
-  speed * HOP_SPEED_FACTOR * hopDuration(gravity)
+  speed * hopDuration(gravity)
 
 /** Heading offset (radians) applied to a route bearing so the crew rig's body
  * faces the direction of travel. The rigs' glTF +Z forward maps to Cesium's

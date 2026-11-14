@@ -1,6 +1,6 @@
 import { Cartesian3, Color, ColorBlendMode, HeadingPitchRoll, Matrix4, Model, ModelAnimationLoop, Transforms, type Viewer } from 'cesium'
 import { MARS } from './trek'
-import { approachSpeedMps, CREW_FORWARD_HEADING_OFFSET, HOP_GROUND_FACTOR, HOP_SPEED_FACTOR, JUMP_DURATION, jumpHeight, MARS_GAIT_RATE } from './crewMission'
+import { approachSpeedMps, CREW_FORWARD_HEADING_OFFSET, JUMP_DURATION, jumpHeight, MARS_GAIT_RATE } from './crewMission'
 import { sampleRoute, totalDistanceKm, type RouteSample, type TraversableRoute } from './routePath'
 import type { WeatherTint } from '../store/weatherEngine'
 
@@ -20,9 +20,10 @@ type Member = {
   exitSide: number // clearance from the parked carrier at disembark (m)
   exitAlong: number // fore/aft offset at disembark (m)
   exitDelay: number // staggered disembark (s)
-  hop: number // -1 grounded, else seconds since takeoff
-  hopCooldown: number // seconds until the next scheduled hop
-  hopPeriod: number // seconds between scheduled hops
+  hop: number // -1 grounded, else seconds through the current stride
+  hopCooldown: number // initial delay before the first stride (s)
+  /** Alternating bank direction, so the bounding crew reads as a loping gait. */
+  bankDir: number
   progress: number // metres walked from the staging point
   exited: boolean
 }
@@ -31,23 +32,29 @@ type Member = {
  * exits and staggered hop phases so they never move in unison. The crew steps
  * out of the carrier's flank (`exitSide`, all on one side, clear of the ~2 m
  * SEV half-width) and merges to its formation offset (`side`) over the first
- * metres of the walk. Hops are frequent and short-cycled so the crew bounds
- * continuously in the low gravity rather than plodding. */
+ * metres of the walk. Bounds are continuous, with only a brief ground contact,
+ * so the crew lopes across the surface instead of plodding. */
 const CREW_GAIT = [
-  { paceFactor: 1.04, side: -1.1, exitSide: 5.2, exitAlong: -1.0, exitDelay: 0.15, hopCooldown: 0.15, hopPeriod: 0.35 },
-  { paceFactor: 0.97, side: 0.9, exitSide: 5.6, exitAlong: -0.2, exitDelay: 0.55, hopCooldown: 0.55, hopPeriod: 0.50 },
-  { paceFactor: 1.0, side: 0.1, exitSide: 5.3, exitAlong: 0.7, exitDelay: 0.95, hopCooldown: 0.95, hopPeriod: 0.65 },
+  { paceFactor: 1.06, side: -1.1, exitSide: 5.2, exitAlong: -1.0, exitDelay: 0.15, hopCooldown: 0.02, bankDir: 1 },
+  { paceFactor: 0.95, side: 0.9, exitSide: 5.6, exitAlong: -0.2, exitDelay: 0.55, hopCooldown: 0.10, bankDir: -1 },
+  { paceFactor: 1.0, side: 0.1, exitSide: 5.3, exitAlong: 0.7, exitDelay: 0.95, hopCooldown: 0.18, bankDir: 1 },
 ]
 /** Distance (m) over which the crew merges from its beside-the-carrier exit
  * clearance to its walking formation offset. Keeps them clear of the parked
  * vehicle without spreading the group out. */
 const EXIT_MERGE_M = 18
-/** Bounded trailing gap (m): the group stays together without equal spacing.
- *  Large enough to absorb the airborne surge of a bound so a hop never yanks a
- *  trailing astronaut forward. */
+/** Bounded trailing gap (m): the group stays together without equal spacing. */
 const MAX_TRAIL_M = 6.0
-/** How long the landing pose holds before the walk resumes (s). */
-const LANDING_HOLD_S = 0.5
+/** Brief ground contact between bounds (s). Long enough to plant and push off,
+ *  short enough that the crew never stands and glides between strides. */
+const CONTACT_S = 0.18
+/** One full bounding cycle: air time plus the brief ground contact. */
+const STRIDE_CYCLE_S = JUMP_DURATION + CONTACT_S
+/** Peak sideways bank of a stride (rad). The sign flips each bound, giving the
+ *  crew a loping, left-right gait instead of a stiff repeated hop. */
+const BANK_MAX_RAD = 0.22
+/** Peak forward lean through the airborne arc (rad). */
+const FLIGHT_LEAN_RAD = 0.12
 /** Authored clip lengths (s); each is played once, in step with its phase. */
 const JUMP_CLIP_S = 0.3666667
 const JUMP_IDLE_CLIP_S = 0.5
@@ -96,7 +103,7 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
   const clipRate = (clip: Pose) => {
     if (clip === 'Jump') return JUMP_CLIP_S / (JUMP_DURATION * JUMP_TAKEOFF_FRACTION)
     if (clip === 'Jump_Idle') return JUMP_IDLE_CLIP_S / (JUMP_DURATION * (1 - JUMP_TAKEOFF_FRACTION))
-    if (clip === 'Jump_Land') return LANDING_CLIP_S / LANDING_HOLD_S
+    if (clip === 'Jump_Land') return LANDING_CLIP_S / CONTACT_S
     if (clip === 'Walk') return Math.min(2.2, approachSpeed / 3) * MARS_GAIT_RATE
     return MARS_GAIT_RATE
   }
@@ -115,7 +122,7 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
     }
     member.clock += dt * rate
   }
-  const place = (member: Member, sample: RouteSample, along: number, side: number, height: number) => {
+  const place = (member: Member, sample: RouteSample, along: number, side: number, height: number, pitch = 0, bank = 0) => {
     const lon = sample.lon + (Math.sin(sample.bearing) * along + Math.cos(sample.bearing) * side) / (59238 * Math.max(0.1, Math.cos(sample.lat * Math.PI / 180)))
     const lat = sample.lat + (Math.cos(sample.bearing) * along - Math.sin(sample.bearing) * side) / 59238
     const ground = groundAt({ ...sample, lon, lat })
@@ -125,7 +132,7 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
     // so CREW_FORWARD_HEADING_OFFSET aims the body's forward axis along the
     // direction of travel (verified against joint world positions).
     member.model.modelMatrix = Transforms.headingPitchRollToFixedFrame(
-      Cartesian3.fromDegrees(lon, lat, ground + 0.04 + height + Math.abs(weatherRoll) * 0.45, MARS), new HeadingPitchRoll(sample.bearing + CREW_FORWARD_HEADING_OFFSET, 0, weatherRoll), MARS)
+      Cartesian3.fromDegrees(lon, lat, ground + 0.04 + height + Math.abs(weatherRoll + bank) * 0.45, MARS), new HeadingPitchRoll(sample.bearing + CREW_FORWARD_HEADING_OFFSET, pitch, weatherRoll + bank), MARS)
   }
   return {
     members,
@@ -147,7 +154,7 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
     walk() { mode = 'walk' },
     jump() {
       if (mode !== 'walk' && mode !== 'hold' && mode !== 'complete') return
-      for (const member of members) if (member.hop < 0) { member.hop = 0; member.hopCooldown = member.hopPeriod }
+      for (const member of members) if (member.hop < 0) member.hop = 0
     },
     update(dt: number, pace: number) {
       if (disposed || members.some(m => !m.model.ready)) return
@@ -159,9 +166,9 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
       if (!stopped) elapsed += dt
       if (!stopped && mode === 'walk') {
         for (const member of members) {
-          const airborne = member.hop >= 0 && member.hop < JUMP_DURATION
-          // A bound is a long gravity stride; between bounds the crew glides.
-          const speed = Math.max(pace, approachSpeed) * member.paceFactor * (airborne ? HOP_SPEED_FACTOR : HOP_GROUND_FACTOR)
+          // Constant horizontal speed through the whole stride: the bound is an
+          // arc, not a speed surge, so the crew never lurches between hops.
+          const speed = Math.max(pace, approachSpeed) * member.paceFactor
           member.progress = Math.min(spanM, member.progress + dt * speed)
         }
         // Pull stragglers up to the bounded trailing gap; the fastest leads.
@@ -170,14 +177,25 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
         leadProgress = Math.max(...members.map(member => member.progress))
         if (leadProgress >= spanM - 1e-6) mode = 'complete'
       }
-      // Independent, staggered hop schedule (a deliberate jump() overrides it).
+      // Continuous bounding: wrap straight from landing into the next stride
+      // (a deliberate jump() can also start one). Only in `walk` does it loop
+      // forever; elsewhere a requested hop completes exactly one cycle.
       for (const member of members) {
         if (member.hop >= 0) {
           member.hop += dt
-          if (member.hop >= JUMP_DURATION + LANDING_HOLD_S) member.hop = -1
+          if (member.hop >= STRIDE_CYCLE_S) {
+            if (mode === 'walk' && !stopped) {
+              const wraps = Math.floor(member.hop / STRIDE_CYCLE_S)
+              member.hop %= STRIDE_CYCLE_S
+              // Alternate the bank each bound for a loping, left-right gait.
+              if (wraps % 2 === 1) member.bankDir = -member.bankDir
+            } else {
+              member.hop = -1
+            }
+          }
         } else if (mode === 'walk' && !stopped) {
           member.hopCooldown -= dt
-          if (member.hopCooldown <= 0) { member.hop = 0; member.hopCooldown = member.hopPeriod }
+          if (member.hopCooldown <= 0) member.hop = 0
         }
       }
       const base = sampleRoute(route, Math.min(1, stagingT + (mode === 'exit' || mode === 'hold' ? 0 : leadProgress) / (total * 1000)))
@@ -192,14 +210,15 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
           // Hop out of the carrier's flank: takeoff, float, then land beside it.
           const airborne = t < JUMP_DURATION
           const clip: Pose = airborne ? (t < JUMP_DURATION * JUMP_TAKEOFF_FRACTION ? 'Jump' : 'Jump_Idle')
-            : t < JUMP_DURATION + LANDING_HOLD_S ? 'Jump_Land' : 'Idle'
+            : t < JUMP_DURATION + CONTACT_S ? 'Jump_Land' : 'Idle'
           pose(member, clip, dt, clipRate(clip))
           // The lateral offset grows through the hop so the crew visibly steps
           // out to the side of the parked vehicle instead of through its body.
           const out = 0.86 + 0.14 * Math.min(1, t / JUMP_DURATION)
+          const arc = airborne ? Math.sin(Math.PI * Math.min(1, t / JUMP_DURATION)) : 0
           place(member, stage, member.exitAlong, member.side + member.exitSide * out,
-            airborne ? jumpHeight(t) : 0)
-          if (t >= JUMP_DURATION + LANDING_HOLD_S) member.exited = true
+            airborne ? jumpHeight(t) : 0, -FLIGHT_LEAN_RAD * arc, member.bankDir * BANK_MAX_RAD * arc)
+          if (t >= JUMP_DURATION + CONTACT_S) member.exited = true
           return
         }
         const airborne = member.hop >= 0 && member.hop < JUMP_DURATION
@@ -210,8 +229,12 @@ export async function createSurfaceCrew(viewer: Viewer, route: TraversableRoute,
         // Merge from the exit clearance to the formation offset as they walk,
         // so they clear the parked carrier before tightening up.
         const merge = Math.max(0, 1 - member.progress / EXIT_MERGE_M)
+        // Bank and forward-lean peak mid-stride and vanish at the contact
+        // boundaries, so successive bounds blend without a visible pop.
+        const arc = member.hop >= 0 ? Math.sin(Math.PI * (member.hop / STRIDE_CYCLE_S)) : 0
         place(member, base, member.progress - leadProgress + member.exitAlong * merge,
-          member.side + member.exitSide * merge, airborne ? jumpHeight(member.hop) : 0)
+          member.side + member.exitSide * merge, airborne ? jumpHeight(member.hop) : 0,
+          -FLIGHT_LEAN_RAD * arc, member.bankDir * BANK_MAX_RAD * arc)
       })
       if (mode === 'exit' && members.every(member => member.exited)) mode = 'hold'
     },

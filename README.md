@@ -279,23 +279,26 @@ mission grade limit.
 
 The supplied astronaut rigs play `Idle`, `Walk`, `Jump`, `Jump_Idle` and
 `Jump_Land`. Mars gravity (3.71 m/s²) drives the cues: the walk cadence is
-slowed by √(3.71/9.81) relative to Earth, and a hop follows a ballistic arc
-(`2·v₀/g`, v₀ = 2.0 m/s, ≈ 1.1 s aloft) whose longer air time also carries the
-crew many metres per bound — a long gravity stride rather than a shuffle —
-with the exported Earth-style jump root motion locked out
-so only one vertical impulse is applied. Every bound plays its own
-`Jump` → `Jump_Idle` → `Jump_Land` sequence, each clip running once across its
-phase so the takeoff and landing read clearly. The on-screen final approach is
-time-compressed so it plays out in ~10–15 s (a fast, floaty low-gravity bound);
-the panel's EVA estimate still uses the real assumed walking pace, which is far
-slower. The crew is never in lockstep: each
-astronaut has a fixed stride factor, a lateral formation offset, a staggered
-hop schedule and a staggered exit, and the group is kept together with a
-bounded trailing gap so spacing stays uneven without spreading out. Each rig is
-oriented to face its direction of travel, and steps out to the side of the
-parked SEV with the `Jump` → `Jump_Land` clips. Use the HUD's **Crew hop · Mars gravity** button
-during the final approach. The rigs, walk cadence and jump are illustrative;
-suits, physiology and consumables are not modelled.
+slowed by √(3.71/9.81) relative to Earth, and a bound follows a ballistic arc
+(`2·v₀/g`, v₀ = 2.0 m/s, ≈ 1.1 s aloft). The crew bounds continuously: each
+stride wraps straight from its brief ground contact into the next leap at a
+constant horizontal speed, so there is no lurch between airborne and grounded
+phases. A small alternating sideways bank and forward lean peak mid-arc, giving
+each astronaut a loping gait. The exported Earth-style jump root motion is
+locked out so only one vertical impulse is applied, and every bound plays its
+own `Jump` → `Jump_Idle` → `Jump_Land` sequence, each clip running once across
+its phase so the takeoff and landing read clearly. The on-screen final approach
+is time-compressed so it plays out in ~10–15 s (a fast, floaty low-gravity bound)
+and never drops below a brisk 4.5 m/s even for a short standoff; the panel's EVA
+estimate still uses the real assumed walking pace, which is far slower. The crew
+is never in lockstep: each astronaut has a fixed stride factor, a lateral
+formation offset, a staggered start and a staggered exit, and the group is kept
+together with a bounded trailing gap so spacing stays uneven without spreading
+out. Each rig is oriented to face its direction of travel, and steps out to the
+side of the parked SEV with the `Jump` → `Jump_Land` clips. Use the HUD's
+**Crew hop · Mars gravity** button during the final approach. The rigs, walk
+cadence and jump are illustrative; suits, physiology and consumables are not
+modelled.
 
 ## Stack
 
