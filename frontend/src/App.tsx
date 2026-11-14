@@ -84,7 +84,7 @@ export default function App() {
   return (
     <div className="relative h-full w-full overflow-hidden">
       <CesiumMap />
-      <FloatingPanel id="status" title="Mission status" width={370} initial={{ left: 16, top: 16 }}>
+      <FloatingPanel id="status" title="Mission status" width={370} initial={{ left: 16, top: 16 }} fixed>
       <header className="flex items-center gap-3 px-4 py-2">
         <span className="text-lg font-semibold tracking-tight text-white">
           ASTRA
