@@ -5,6 +5,7 @@ import RoutePanel from './components/RoutePanel'
 import SurvivalBriefingPanel from './components/SurvivalBriefingPanel'
 import CesiumMap from './map/CesiumMap'
 import FloatingPanel from './components/FloatingPanel'
+import UserManualOverlay from './components/UserManualOverlay'
 import { useAppStore } from './store/appStore'
 import { useDriveStore } from './store/driveStore'
 import { connectCommands } from './ws/commandChannel'
@@ -83,6 +84,7 @@ export default function App() {
   return (
     <div className="relative h-full w-full overflow-hidden">
       <CesiumMap />
+      <UserManualOverlay />
       <FloatingPanel id="status" title="Mission status" width={370} initial={{ left: 16, top: 16 }} fixed>
         <header className="flex items-center gap-3 px-4 py-2">
           <span className="text-lg font-semibold tracking-tight text-white">
@@ -101,6 +103,14 @@ export default function App() {
           ) : (
             <span className="text-xs text-neutral-400">checking backend…</span>
           )}
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="ml-auto rounded-md border border-white/20 bg-white/5 px-2 py-0.5 text-[11px] font-medium text-neutral-200 hover:bg-white/10 hover:text-white"
+            title="Refresh the app"
+          >
+            Reset
+          </button>
         </header>
       </FloatingPanel>
 
