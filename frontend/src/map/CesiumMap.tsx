@@ -40,7 +40,6 @@ import type {
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import DriveHud from '../components/DriveHud'
 import MapExplorer from '../components/MapExplorer'
-import TerrainSimulationView from '../components/TerrainSimulationView'
 
 import LayerPanel from '../components/LayerPanel'
 import SciencePanel from '../components/SciencePanel'
@@ -82,6 +81,7 @@ import { createDriveSurface } from './driveSurface'
 import { declutterLabels } from './labelLayout'
 import { createWheelDust } from './wheelDust'
 import { createMolaTerrainProvider } from './terrain'
+import { createMarsSurfaceMaterial } from './marsSurface'
 import { MARS, MOLA_SHADE, VIKING, createTrekProvider } from './trek'
 
 /** Lift the rover origin (wheel plane) this far above the sampled ground. */
@@ -363,8 +363,6 @@ async function presampleCorridor(
 export default function CesiumMap() {
   const containerRef = useRef<HTMLDivElement>(null)
   const [mapViewer, setMapViewer] = useState<Viewer | null>(null)
-  const routePhase = useAppStore((s) => s.routePhase)
-  const showTerrainSim = routePhase === 'preview' || routePhase === 'simulating'
   const [terrainStatus, setTerrainStatus] = useState<'loading' | 'ready' | 'fallback'>('loading')
   const retryTerrainRef = useRef<() => void>(() => {})
 
@@ -416,6 +414,14 @@ export default function CesiumMap() {
     viewer.scene.globe.showGroundAtmosphere = false
     viewer.scene.globe.depthTestAgainstTerrain = true
     viewer.scene.globe.maximumScreenSpaceError = 2
+    // No day/night terminator shadow; keep the normal globe colours from space.
+    viewer.scene.globe.enableLighting = false
+    // Stylised graphical surface across the whole planet, in every 3D view.
+    viewer.scene.globe.material = createMarsSurfaceMaterial()
+    viewer.scene.fog.enabled = true
+    viewer.scene.fog.density = 0.0
+    viewer.scene.fog.minimumBrightness = 0.03
+    viewer.scene.fog.screenSpaceErrorFactor = 2.0
     viewer.scene.screenSpaceCameraController.enableCollisionDetection = false
     ;(viewer.camera.frustum as PerspectiveFrustum).fov = CesiumMath.toRadians(
       55,
@@ -427,6 +433,7 @@ export default function CesiumMap() {
       viewer.scene.skyAtmosphere.saturationShift = -0.15
       viewer.scene.skyAtmosphere.brightnessShift = -0.08
     }
+    if (viewer.scene.skyBox) viewer.scene.skyBox.show = false
     viewer.scene.backgroundColor = Color.fromCssColorString('#120b08')
 
 
@@ -595,7 +602,10 @@ export default function CesiumMap() {
       // Show the Mars sky only near the surface; keep it invisible in globe view.
       if (viewer.scene.skyAtmosphere) {
         const cameraHeight = viewer.camera.positionCartographic.height
-        viewer.scene.skyAtmosphere.show = Number.isFinite(cameraHeight) && cameraHeight < 1_500_000
+        // Dust haze/fog in sky and distance near surface; minimal for external globe view.
+        const nearSurface = Number.isFinite(cameraHeight) && cameraHeight < 1_500_000
+        viewer.scene.skyAtmosphere.show = nearSurface
+        viewer.scene.fog.density = nearSurface ? 0.00024 : 0.0
       }
       // The weather layer advances with the render clock, even when no asset
       // is moving, so an event can fade in before the drive starts.
@@ -2724,15 +2734,12 @@ export default function CesiumMap() {
 
   return (
     <>
-      <div className="relative h-full w-full">
-        <div ref={containerRef} className={`h-full w-full ${showTerrainSim ? 'invisible' : ''}`} />
-        {showTerrainSim ? <TerrainSimulationView /> : null}
-      </div>
+      <div ref={containerRef} className="h-full w-full" />
       <LayerPanel terrainStatus={terrainStatus} onRetryTerrain={() => retryTerrainRef.current()} />
       <DriveHud />
       <SciencePanel />
       <ScienceToast />
-      {mapViewer && !mapViewer.isDestroyed() && !showTerrainSim && <MapExplorer viewer={mapViewer} />}
+      {mapViewer && !mapViewer.isDestroyed() && <MapExplorer viewer={mapViewer} />}
       <div className="pointer-events-none fixed bottom-[92px] left-1/2 z-20 flex -translate-x-1/2">
         <button type="button" onClick={toGlobeView} className="pointer-events-auto rounded-full border border-white/20 bg-neutral-950/80 px-3 py-1.5 text-[11px] font-medium text-neutral-100 shadow-lg backdrop-blur hover:bg-white/10">
           Globe view
