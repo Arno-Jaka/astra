@@ -1,8 +1,8 @@
-import { Cartesian2, Cartesian3, Color, ConeEmitter, Matrix4, ParticleSystem, Transforms, Viewer } from 'cesium'
+import { Cartesian2, Cartesian3, Color, ConeEmitter, HeadingPitchRoll, Matrix3, Matrix4, ParticleSystem, Quaternion, Transforms, Viewer } from 'cesium'
 import { MARS } from './trek'
 
-/** Ballistic dust grains under Mars gravity. Emission follows actual motion,
- * then existing particles settle/fade when the rover brakes to a standstill. */
+/** Ballistic dust grains kicked back near tyres (Mars gravity). Emission follows
+ * actual motion, then existing particles settle/fade when the vehicle stops. */
 export function createWheelDust(viewer: Viewer) {
   const canvas = document.createElement('canvas')
   canvas.width = canvas.height = 32
@@ -11,22 +11,40 @@ export function createWheelDust(viewer: Viewer) {
   gradient.addColorStop(0, 'rgba(255,255,255,0.9)')
   gradient.addColorStop(1, 'rgba(255,255,255,0)')
   context.fillStyle = gradient; context.fillRect(0, 0, 32, 32)
-  const systems = [-1.18, 1.18].map(side => {
+
+  // Approximate tyre positions in vehicle model space (x forward, y left, z up)
+  // with a slight rear bias so dust kicks back from the wheels.
+  const wheelOffsets = [
+    { x: 1.05, y: -1.05, z: 0.08 },
+    { x: 1.05, y: 1.05, z: 0.08 },
+    { x: -1.15, y: -1.05, z: 0.08 },
+    { x: -1.15, y: 1.05, z: 0.08 },
+  ]
+
+  // Rotate emitter frame so ConeEmitter (+Z) points mostly backward and upward.
+  const kickbackRotation = Matrix3.fromQuaternion(
+    Quaternion.fromHeadingPitchRoll(new HeadingPitchRoll(Math.PI, -0.55, 0), new Quaternion()),
+    new Matrix3(),
+  )
+
+  const systems = wheelOffsets.map(offset => {
     const system = new ParticleSystem({
-      image: canvas, imageSize: new Cartesian2(0.18, 0.18), sizeInMeters: true,
-      emitter: new ConeEmitter(0.75), emissionRate: 0,
-      minimumSpeed: 0.2, maximumSpeed: 0.7,
-      minimumParticleLife: 0.25, maximumParticleLife: 0.7,
-      startScale: 0.3, endScale: 1.6,
-      startColor: new Color(0.7, 0.5, 0.32, 0.22), endColor: new Color(0.55, 0.38, 0.24, 0),
+      image: canvas, imageSize: new Cartesian2(0.14, 0.14), sizeInMeters: true,
+      emitter: new ConeEmitter(0.55), emissionRate: 0,
+      minimumSpeed: 0.35, maximumSpeed: 1.35,
+      minimumParticleLife: 0.22, maximumParticleLife: 0.65,
+      startScale: 0.22, endScale: 1.15,
+      startColor: new Color(0.72, 0.52, 0.35, 0.16), endColor: new Color(0.55, 0.38, 0.24, 0),
       updateCallback: (particle, dt) => {
         const up = MARS.geodeticSurfaceNormal(particle.position, new Cartesian3())
         Cartesian3.add(particle.velocity, Cartesian3.multiplyByScalar(up, -3.71 * dt, up), particle.velocity)
       },
     })
     viewer.scene.primitives.add(system)
-    return { side, system }
+    return { offset, system }
   })
+  const scratch = new Matrix4()
+  const rotationMatrix = Matrix4.fromRotationTranslation(kickbackRotation, Cartesian3.ZERO, new Matrix4())
   const plumes: ParticleSystem[] = []
   return {
     jet(position: Cartesian3) {
@@ -44,9 +62,14 @@ export function createWheelDust(viewer: Viewer) {
       viewer.scene.primitives.add(plume); plumes.push(plume)
     },
     update(matrix: Matrix4, speed: number) {
-      for (const { side, system } of systems) {
-        system.modelMatrix = Matrix4.multiplyByTranslation(matrix, new Cartesian3(-1.3, side, 0.35), new Matrix4())
-        system.emissionRate = Math.min(24, Math.max(0, speed) * 28)
+      const rate = Math.min(10, Math.max(0, speed) * 9)
+      for (const { offset, system } of systems) {
+        system.modelMatrix = Matrix4.multiply(
+          Matrix4.multiplyByTranslation(matrix, new Cartesian3(offset.x, offset.y, offset.z), scratch),
+          rotationMatrix,
+          system.modelMatrix ?? new Matrix4(),
+        )
+        system.emissionRate = rate
       }
     },
     stop() { for (const { system } of systems) system.emissionRate = 0 },

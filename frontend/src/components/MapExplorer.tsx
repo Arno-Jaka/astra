@@ -59,6 +59,30 @@ export default function MapExplorer({ viewer }: { viewer: Viewer }) {
     setMode('idle'); setError('')
     viewer.entities.removeById('explorer-start')
     viewer.entities.removeById('explorer-end')
+    for (const id of [
+      'astra-route',
+      'astra-route-start',
+      'astra-route-end',
+      'astra-route-label',
+      'astra-preview',
+      'astra-hazardous',
+      'astra-hazardous-label',
+    ]) {
+      viewer.entities.removeById(id)
+    }
+    for (const entity of [...viewer.entities.values]) {
+      if (typeof entity.id === 'string' && entity.id.startsWith('astra-danger-')) {
+        viewer.entities.remove(entity)
+      }
+    }
+    useAppStore.getState().setRoute(null)
+    const carto = viewer.camera.positionCartographic
+    const lon = CesiumMath.toDegrees(carto.longitude)
+    const lat = CesiumMath.toDegrees(carto.latitude)
+    viewer.camera.flyTo({
+      destination: Cartesian3.fromDegrees(lon, lat, 12_000_000, MARS),
+      duration: 1.0,
+    })
   }
 
   useEffect(() => {
@@ -248,7 +272,9 @@ export default function MapExplorer({ viewer }: { viewer: Viewer }) {
 
   return <>
     <SelectionRings viewer={viewer} />
-    <SiteSearch endpoints={endpoints} busy={mode === 'busy' || phase === 'simulating'} onSelect={(point, role) => selectPoint.current(point, role)} onReset={reset} />
+    <div className="fixed left-1/2 top-3 z-30 -translate-x-1/2">
+      <SiteSearch endpoints={endpoints} busy={mode === 'busy' || phase === 'simulating'} onSelect={(point, role) => selectPoint.current(point, role)} onReset={reset} />
+    </div>
     {(mode !== 'idle' || error) && <div className="fixed bottom-6 left-1/2 z-30 -translate-x-1/2 rounded-full bg-neutral-950/90 px-4 py-2 text-xs shadow-lg">
       <span role={error ? 'alert' : 'status'}>{error || (mode === 'end' ? 'Start selected · Click anywhere on Mars for destination' : 'Computing routes…')}</span>
       <button onClick={reset} className="ml-3 text-orange-200 underline">Cancel</button>

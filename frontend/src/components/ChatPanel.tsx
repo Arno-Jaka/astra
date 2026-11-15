@@ -10,10 +10,8 @@ type Props = {
   messages: ChatMessage[]
   busy: boolean
   error: string | null
-  voice: boolean
   onSend: (text: string) => void
   onDismissError: () => void
-  onToggleVoice: () => void
 }
 
 const EXAMPLES = [
@@ -21,32 +19,6 @@ const EXAMPLES = [
   'What is the weather at Jezero Crater?',
   'Plan a 10 degree route from Gale Crater to Mount Sharp',
 ]
-
-type RecognitionEvent = {
-  results: { 0: { 0: { transcript: string } } }
-}
-
-type Recognition = {
-  lang: string
-  interimResults: boolean
-  continuous: boolean
-  onresult: ((event: RecognitionEvent) => void) | null
-  onend: (() => void) | null
-  onerror: (() => void) | null
-  start: () => void
-  stop: () => void
-}
-
-type RecognitionConstructor = new () => Recognition
-
-function speechConstructor(): RecognitionConstructor | null {
-  if (typeof window === 'undefined') return null
-  const scope = window as unknown as {
-    SpeechRecognition?: RecognitionConstructor
-    webkitSpeechRecognition?: RecognitionConstructor
-  }
-  return scope.SpeechRecognition ?? scope.webkitSpeechRecognition ?? null
-}
 
 function inline(text: string) {
   return text.split(/(\*\*[^*]+\*\*)/g).map((part, index) =>
@@ -81,50 +53,15 @@ export default function ChatPanel({
   messages,
   busy,
   error,
-  voice,
   onSend,
   onDismissError,
-  onToggleVoice,
 }: Props) {
   const [text, setText] = useState('')
-  const [listening, setListening] = useState(false)
   const endRef = useRef<HTMLDivElement>(null)
-  const recognitionRef = useRef<Recognition | null>(null)
-  const speechSupported = speechConstructor() !== null
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'nearest' })
   }, [messages, busy])
-
-  useEffect(
-    () => () => {
-      recognitionRef.current?.stop()
-    },
-    [],
-  )
-
-  const toggleMicrophone = () => {
-    if (listening) {
-      recognitionRef.current?.stop()
-      setListening(false)
-      return
-    }
-    const Constructor = speechConstructor()
-    if (!Constructor) return
-    const recognition = new Constructor()
-    recognition.lang = 'en-US'
-    recognition.interimResults = false
-    recognition.continuous = false
-    recognition.onresult = (event) => {
-      const transcript = event.results[0][0].transcript
-      if (transcript) setText(transcript)
-    }
-    recognition.onend = () => setListening(false)
-    recognition.onerror = () => setListening(false)
-    recognitionRef.current = recognition
-    recognition.start()
-    setListening(true)
-  }
 
   const submit = () => {
     const value = text.trim()
@@ -143,18 +80,6 @@ export default function ChatPanel({
           <h1 className="text-sm font-semibold text-white">ASTRA</h1>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={onToggleVoice}
-            className={`rounded-full border px-2 py-1 text-[10px] uppercase tracking-wider transition ${
-              voice
-                ? 'border-sky-400/30 bg-sky-400/10 text-sky-300'
-                : 'border-white/10 bg-white/[0.04] text-neutral-500'
-            }`}
-            aria-pressed={voice}
-          >
-            Voice {voice ? 'on' : 'off'}
-          </button>
           <span
             className={`flex items-center gap-1.5 rounded-full border px-2 py-1 text-[10px] uppercase tracking-wider ${
               busy
@@ -250,23 +175,6 @@ export default function ChatPanel({
             placeholder="Fly, check weather, or plan a traverse…"
             className="min-h-[44px] flex-1 resize-none rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-500 focus:border-orange-300/50 focus:outline-none"
           />
-          {speechSupported ? (
-            <button
-              type="button"
-              onClick={toggleMicrophone}
-              disabled={busy}
-              aria-label={
-                listening ? 'Stop voice input' : 'Start voice input'
-              }
-              className={`h-[44px] rounded-lg border px-3 text-xs font-semibold transition ${
-                listening
-                  ? 'border-sky-300/50 bg-sky-400/20 text-sky-200'
-                  : 'border-white/10 bg-white/[0.04] text-neutral-400 hover:text-sky-200'
-              } disabled:cursor-not-allowed disabled:opacity-40`}
-            >
-              {listening ? 'Stop' : 'Mic'}
-            </button>
-          ) : null}
           <button
             type="submit"
             disabled={busy || !text.trim()}

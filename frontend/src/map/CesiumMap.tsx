@@ -42,6 +42,7 @@ import DriveHud from '../components/DriveHud'
 import MapExplorer from '../components/MapExplorer'
 
 import LayerPanel from '../components/LayerPanel'
+import WeatherCard from '../components/WeatherCard'
 import SciencePanel from '../components/SciencePanel'
 import ScienceToast from '../components/ScienceToast'
 import {
@@ -1598,6 +1599,7 @@ export default function CesiumMap() {
           chaseActive = false
           destroyChaseControls()
           viewer.scene.screenSpaceCameraController.enableInputs = true
+          useDriveStore.getState().warn(null)
           useDriveStore.getState().end()
           useDriveStore.getState().update({ completion, missionPhase: completion === 'arrived' ? 'complete' : 'hold' })
           // Keep the preview marker where the drive stopped. Syncing
@@ -1867,6 +1869,66 @@ export default function CesiumMap() {
           CRASH.minRolloverGradeDeg,
           route.slope_limit_deg + CRASH.gradeOverLimitDeg,
         )
+        /** Distance (km) ahead to start warning about rollover/cliff hazards so
+         * the message stays readable before the hazard is reached. */
+        const HAZARD_WARN_LOOKAHEAD_KM = 1.2
+        const hazardWarning = (distanceKm: number): string | null => {
+          // Warn about approaching danger zones (over-limit / rollover / cliff)
+          // from ahead until the vehicle has cleared the zone.
+          let best: { at: number; label: string } | null = null
+          for (const zone of dangers) {
+            if (!(zone.over_limit || zone.type === 'rollover' || zone.type === 'cliff')) continue
+            const zoneStart = Math.max(0, zone.distance_km - zone.span_km / 2)
+            const zoneEnd = zone.distance_km + zone.span_km / 2
+            if (distanceKm > zoneEnd + 0.05) continue
+            const ahead = zoneStart - distanceKm
+            if (ahead > HAZARD_WARN_LOOKAHEAD_KM) continue
+            const label = distanceKm >= zoneStart
+              ? `${zone.label} — hazard zone`
+              : `${zone.label} in ${Math.max(0, Math.round(ahead * 1000))} m`
+            if (!best || zoneStart < best.at) best = { at: zoneStart, label }
+          }
+          // SEV halts at the rollover envelope; warn before the grade is reached.
+          if (vehicle === 'sev') {
+            const profile = traverse.profile
+            for (let i = 1; i < profile.length; i++) {
+              const p = profile[i]
+              const prev = profile[i - 1]
+              const km = p.distance_km
+              if (km < distanceKm - 0.02) continue
+              if (km - distanceKm > HAZARD_WARN_LOOKAHEAD_KM) break
+              const absGrade = Math.max(Math.abs(p.grade_deg ?? 0), Math.abs(prev.grade_deg ?? 0))
+              if (absGrade >= rolloverGradeDeg) {
+                const ahead = km - distanceKm
+                const label = ahead <= 0.03
+                  ? `Rollover risk — ${absGrade.toFixed(0)}° grade at limit`
+                  : `Rollover risk in ${Math.max(0, Math.round(ahead * 1000))} m — ${absGrade.toFixed(0)}° grade`
+                if (!best || km < best.at) best = { at: km, label }
+                break
+              }
+            }
+          } else {
+            // Rover only topples at genuine cliffs; warn before cliff zones/grades.
+            const profile = traverse.profile
+            for (let i = 1; i < profile.length; i++) {
+              const p = profile[i]
+              const prev = profile[i - 1]
+              const km = p.distance_km
+              if (km < distanceKm - 0.02) continue
+              if (km - distanceKm > HAZARD_WARN_LOOKAHEAD_KM) break
+              const absGrade = Math.max(Math.abs(p.grade_deg ?? 0), Math.abs(prev.grade_deg ?? 0))
+              if (absGrade >= CRASH.fallGradeDeg) {
+                const ahead = km - distanceKm
+                const label = ahead <= 0.03
+                  ? `Cliff hazard — ${absGrade.toFixed(0)}° grade`
+                  : `Cliff hazard in ${Math.max(0, Math.round(ahead * 1000))} m — ${absGrade.toFixed(0)}° grade`
+                if (!best || km < best.at) best = { at: km, label }
+                break
+              }
+            }
+          }
+          return best?.label ?? null
+        }
         type CrashState = {
           type: 'rollover' | 'fall' | 'jet'
           detail: string
@@ -2172,6 +2234,16 @@ export default function CesiumMap() {
               Cartesian3.fromDegrees(driveSample.lon, driveSample.lat, rideHeight, MARS, position)
               matrix = roverMatrix(position, bearing, up, tiltSmooth, clearance, weatherRoll)
             }
+            // Safety floor against the rendered/known terrain so the vehicle
+            // cannot clip into steep landforms (especially on hazardous routes).
+            const surfaceFloor = terrainHeightAt(driveSample.lon, driveSample.lat) ?? ground
+            if (Number.isFinite(surfaceFloor) && rideHeight < surfaceFloor) {
+              rideHeight = surfaceFloor
+              bodyHeight = Math.max(bodyHeight, rideHeight)
+              verticalSpeed = Math.max(0, verticalSpeed)
+              Cartesian3.fromDegrees(driveSample.lon, driveSample.lat, rideHeight, MARS, position)
+              matrix = roverMatrix(position, bearing, up, tiltSmooth, clearance, weatherRoll)
+            }
             scoutModel.modelMatrix = matrix
             wheelDust?.update(matrix, velocityMps)
           }
@@ -2189,16 +2261,12 @@ export default function CesiumMap() {
             updateChaseCamera(driveSample, ground, dt)
           }
           // Throttled telemetry: the HUD, route-panel readouts, scrubber, and
-          // elevation-chart cursor all track the drive live. Passing a
-          // non-fatal danger zone raises the amber slip-risk banner.
+          // elevation-chart cursor all track the drive live. Warn ahead of
+          // rollover/cliff hazards and keep the warning visible until the
+          // hazard is reached or cleared so it can be read.
           if (now - lastHudPush > 200 || (wantsHalt && velocityMps === 0 && controls.speedMps !== 0)) {
             lastHudPush = now
-            const zone = dangers.find(
-              (candidate) =>
-                Math.abs(sample.distanceKm - candidate.distance_km) <=
-                candidate.span_km / 2 + 0.25,
-            )
-            useDriveStore.getState().warn(zone ? zone.label : null)
+            useDriveStore.getState().warn(hazardWarning(sample.distanceKm))
             useDriveStore.getState().update({
               distanceKm: sample.distanceKm,
               gradeDeg: sample.gradeDeg,
@@ -2362,7 +2430,9 @@ export default function CesiumMap() {
           width: 7,
           material: new PolylineGlowMaterialProperty({
             glowPower: 0.18,
-            color: Color.fromCssColorString('#ff8a3d'),
+            color: route.slope_compliant
+              ? Color.fromCssColorString('#22c55e')
+              : Color.fromCssColorString('#ef4444'),
           }),
           clampToGround: true,
         },
@@ -2401,8 +2471,8 @@ export default function CesiumMap() {
 
       const first = route.coordinates[0] ?? [0, 0]
       const last = route.coordinates[route.coordinates.length - 1] ?? first
-      pin('astra-route-start', first[0], first[1], Color.LIME, route.start)
-      pin('astra-route-end', last[0], last[1], Color.ORANGE, route.end)
+      pin('astra-route-start', first[0], first[1], Color.CYAN, route.start)
+      pin('astra-route-end', last[0], last[1], route.slope_compliant ? Color.LIME : Color.fromCssColorString('#ef4444'), route.end)
 
       const mid = sampleRoute(route, 0.55)
       const verdict = route.slope_compliant ? 'Safest route' : 'Direct route'
@@ -2412,9 +2482,13 @@ export default function CesiumMap() {
         label: {
           text: `${verdict} · ${route.distance_km.toFixed(1)} km · max ${route.max_grade_deg.toFixed(1)}°`,
           font: '12px sans-serif',
-          fillColor: Color.WHITE,
+          fillColor: route.slope_compliant
+            ? Color.fromCssColorString('#bbf7d0')
+            : Color.fromCssColorString('#fecaca'),
           showBackground: true,
-          backgroundColor: Color.fromCssColorString('#2a1608dd'),
+          backgroundColor: route.slope_compliant
+            ? Color.fromCssColorString('#052e16dd')
+            : Color.fromCssColorString('#450a0add'),
           pixelOffset: new Cartesian2(0, 24),
           verticalOrigin: VerticalOrigin.TOP,
           heightReference: HeightReference.CLAMP_TO_GROUND,
@@ -2723,6 +2797,9 @@ export default function CesiumMap() {
     <>
       <div className="relative h-full w-full">
         <div ref={containerRef} className="h-full w-full" />
+      </div>
+      <div className="fixed right-[292px] top-4 z-30">
+        <WeatherCard />
       </div>
       <LayerPanel terrainStatus={terrainStatus} onRetryTerrain={() => retryTerrainRef.current()} />
       <DriveHud />

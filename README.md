@@ -64,10 +64,9 @@ and rover simulation. Cancel stops pending route display.
 
 Interplanetary Survival Guide: Martian Map — NASA Space Apps Challenge 2026.
 
-ASTRA is a hyperlocal Mars excursion planner. Ask it for a site (by text or
-voice) and it flies the globe there, reads the nearest live weather, presents a
-sourced survival briefing, and plans a slope-limited traverse with an elevation
-profile. Replies are spoken with a neural voice.
+ASTRA is a hyperlocal Mars excursion planner. Ask it for a site and it flies the
+globe there, reads the nearest live weather, presents a sourced survival
+briefing, and plans a slope-limited traverse with an elevation profile.
 
 ## What works
 
@@ -190,8 +189,7 @@ profile. Replies are spoken with a neural voice.
 - **Live atmospheric layer** — a Curiosity REMS station pin on the globe at
   Bradbury Landing shows the latest sol, temperature range, and pressure
   from the live NASA feed.
-- **Voice** — browser speech recognition for input (Chrome/Edge), `edge-tts`
-  for spoken replies with a voice toggle. Text input always works.
+
 - **Command/ack channel** — UI map actions are only reported as done after the
   frontend acknowledges the WebSocket command.
 
@@ -320,7 +318,7 @@ modelled.
 ## Stack
 
 - `backend/` — FastAPI (Python 3.11, uv), Agno + Groq commander, deterministic
-  DEM/route/slope-tile services, REMS client, edge-tts.
+  DEM/route/slope-tile services, REMS client.
   `app/map_api.py` registers the terrain, slope, site, and weather map endpoints.
 - `frontend/` — Vite + React + TypeScript, CesiumJS, Zod, Zustand, Tailwind.
 
@@ -422,8 +420,7 @@ Open `http://localhost:5173`. Vite proxies `/api` and `/ws` to port 8000.
    green/amber/red regional screening, then pick a zone in the panel to read its
    estimated temperature, dust, surface dose, scenic character and science value;
    note the live REMS station pin at Bradbury Landing.
-7. **Voice** — toggle **Voice** in the chat header; the mic button transcribes.
-8. **Jezero** — "What is the weather at Jezero?" — no fly, nearest-station
+7. **Jezero** — "What is the weather at Jezero?" — no fly, nearest-station
    labeling, Octavia E. Butler Landing marker via the briefing.
 
 ## Data and provenance

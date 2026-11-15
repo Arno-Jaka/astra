@@ -7,7 +7,6 @@ import CesiumMap from './map/CesiumMap'
 import FloatingPanel from './components/FloatingPanel'
 import { useAppStore } from './store/appStore'
 import { useDriveStore } from './store/driveStore'
-import { speak, stopSpeaking } from './tts'
 import { connectCommands } from './ws/commandChannel'
 
 type Health = { status: string; service: string }
@@ -25,7 +24,6 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([WELCOME])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [voice, setVoice] = useState(true)
   const nextId = useRef(1)
   const briefing = useAppStore((state) => state.briefing)
   const conditions = useAppStore((state) => state.conditions)
@@ -74,7 +72,6 @@ export default function App() {
         ...previous,
         { id: assistantId, role: 'assistant', content },
       ])
-      if (voice) void speak(content)
     } catch (cause) {
       const detail = cause instanceof Error ? cause.message : String(cause)
       setError(`Could not reach the mission backend (${detail}).`)
@@ -113,13 +110,8 @@ export default function App() {
             messages={messages}
             busy={busy}
             error={error}
-            voice={voice}
             onSend={send}
             onDismissError={() => setError(null)}
-            onToggleVoice={() => {
-              if (voice) stopSpeaking()
-              setVoice(!voice)
-            }}
           />
         </FloatingPanel>
         {briefing ? <FloatingPanel id="briefing" title="Science briefing" width={420} initial={{ right: 16, bottom: 16 }}><SurvivalBriefingPanel briefing={briefing} /></FloatingPanel> : null}

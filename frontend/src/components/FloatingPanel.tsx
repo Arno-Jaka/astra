@@ -8,8 +8,8 @@ const rectsOverlap = (a: DOMRect, b: DOMRect) =>
   a.left < b.right + GAP && a.right + GAP > b.left && a.top < b.bottom + GAP && a.bottom + GAP > b.top
 
 /** Shared mouse/touch/keyboard HUD docking. Panels avoid overlapping other panels and stay near screen edges. */
-export default function FloatingPanel({ id, title, width, initial, children, defaultCollapsed = false, fixed = false }: {
-  id: string; title: string; width: number; initial: CSSProperties; children: ReactNode; defaultCollapsed?: boolean; fixed?: boolean
+export default function FloatingPanel({ id, title, width, initial, children, defaultCollapsed = false, fixed = false, avoidOverlap = true, maxHeight }: {
+  id: string; title: string; width: number; initial: CSSProperties; children: ReactNode; defaultCollapsed?: boolean; fixed?: boolean; avoidOverlap?: boolean; maxHeight?: string
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const drag = useRef<{ pointer: number; origin: Point; start: Point } | null>(null)
@@ -39,8 +39,8 @@ export default function FloatingPanel({ id, title, width, initial, children, def
   }
 
   const deoverlap = (point: Point) => {
-    let candidate = constrain(point)
-    if (!overlapsOthers(candidate)) return candidate
+    const candidate = constrain(point)
+    if (!avoidOverlap || !overlapsOthers(candidate)) return candidate
     const self = ref.current
     const rect = self?.getBoundingClientRect()
     const w = rect?.width ?? width
@@ -119,8 +119,10 @@ export default function FloatingPanel({ id, title, width, initial, children, def
     })
     return () => cancelAnimationFrame(idFrame)
   })
+  const panelMaxHeight = maxHeight ?? 'calc(100dvh - 24px)'
+  const contentMaxHeight = maxHeight ? `calc(${maxHeight} - 42px)` : 'calc(100dvh - 66px)'
   return <div ref={ref} data-panel={id} className="pointer-events-auto fixed z-30 max-w-[calc(100vw-24px)] overflow-hidden rounded-xl border border-white/15 bg-neutral-950/85 shadow-2xl backdrop-blur-xl"
-    style={{ width, ...(fixed || !position ? initial : { left: position.x, top: position.y }), maxHeight: 'calc(100dvh - 24px)', transition: fixed || dragging ? 'none' : 'left 240ms ease-out, top 240ms ease-out', zIndex: !fixed && dragging ? 60 : 30 }}>
+    style={{ width, ...(fixed || !position ? initial : { left: position.x, top: position.y }), maxHeight: panelMaxHeight, transition: fixed || dragging ? 'none' : 'left 240ms ease-out, top 240ms ease-out', zIndex: !fixed && dragging ? 60 : 30 }}>
     <div className="flex items-center border-b border-white/10 bg-white/[0.04]">
       {fixed ? (
         <div className="min-w-0 flex-1 px-3 py-2 text-left text-xs font-semibold uppercase tracking-widest text-neutral-200">{title}</div>
@@ -161,6 +163,6 @@ export default function FloatingPanel({ id, title, width, initial, children, def
       )}
       <button type="button" aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${title}`} aria-expanded={!collapsed} onClick={() => setCollapsed(!collapsed)} className="px-3 py-2 text-neutral-300">{collapsed ? '+' : '−'}</button>
     </div>
-    <div hidden={collapsed} className="overflow-auto" style={{ maxHeight: 'calc(100dvh - 66px)' }}>{children}</div>
+    <div hidden={collapsed} className="overflow-auto" style={{ maxHeight: contentMaxHeight }}>{children}</div>
   </div>
 }

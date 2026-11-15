@@ -10,7 +10,6 @@ class Settings(BaseSettings):
 
     groq_api_key: str = ""
     nasa_api_key: str = ""
-    tts_provider: str = "edge"
     mola_dem_path: str = ""
 
     # Service / networking
