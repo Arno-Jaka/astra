@@ -21,3 +21,6 @@ dist/
 .DS_Store
 *.log
 .aider*
+
+# Rust build artifacts (astra_dem_rs)
+backend/astra_dem_rs/target/

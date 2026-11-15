@@ -192,6 +192,50 @@ async def weather_station() -> dict[str, object]:
     }
 
 
+@router.get("/weather/point")
+async def weather_point(lon: float, lat: float) -> dict[str, Any]:
+    if not (-180 <= lon <= 180 and -90 <= lat <= 90):
+        raise HTTPException(400, "Invalid coordinates")
+    try:
+        sol = await latest_sol()
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail=f"REMS feed unavailable: {exc}") from exc
+    gale = BRIEFINGS["Gale Crater"]["landing"]
+    try:
+        regional = environment.assess_point(lon, lat)
+    except Exception:
+        regional = None
+    distance_km = dem._great_circle_km(lon, lat, gale["lon"], gale["lat"])
+    return {
+        "ok": True,
+        "requested": {"lon": lon, "lat": lat},
+        "station": {
+            "station_name": "Curiosity (MSL)",
+            "site_name": gale["name"],
+            "lon": gale["lon"],
+            "lat": gale["lat"],
+            "distance_km": round(distance_km, 1),
+            "sol": sol.get("sol"),
+            "terrestrial_date": sol.get("terrestrial_date"),
+            "min_temp_c": _to_float(sol.get("min_temp")),
+            "max_temp_c": _to_float(sol.get("max_temp")),
+            "pressure_pa": _to_float(sol.get("pressure")),
+            "atmo_opacity": sol.get("atmo_opacity"),
+            "mission": "Mars Science Laboratory (Curiosity)",
+            "instrument": "REMS",
+            "source_url": REMS_URL,
+            "data_note": "REMS feed is provided for outreach purposes (Gale Crater).",
+            "retrieved_at": datetime.now(UTC).isoformat(),
+        },
+        "regional": regional,
+        "note": (
+            "Realtime surface weather is from NASA/JPL REMS at Gale Crater; "
+            "regional screening is derived from latitude/elevation and is not a "
+            "measured forecast for this exact point."
+        ),
+    }
+
+
 @router.get("/dem/tile")
 def dem_tile(west: float, south: float, east: float, north: float,
              width: int = 64, height: int = 64) -> Response:
@@ -230,18 +274,25 @@ def slope_tile(z: int, x: int, y: int) -> Response:
     east, south = west + tile_w, north - tile_h
     size = 256
     try:
-        grid = heightmap(west, south, east, north, width=size + 1, height=size + 1)
+        dem._dem()  # ensure DEM exists and globals are initialized
+        if dem._astra_dem_rs is not None:
+            rgba_flat = dem._astra_dem_rs.slope_rgba(
+                str(dem.dem_file()), west, south, east, north, size
+            )
+            rgba = np.asarray(rgba_flat, dtype=np.uint8).reshape((size, size, 4))
+        else:
+            grid = heightmap(west, south, east, north, width=size + 1, height=size + 1)
+            radius_m = MARS_RADIUS_KM * 1000.0
+            step_x = tile_w * math.pi / 180 * radius_m * math.cos(math.radians((north + south) / 2)) / size
+            step_y = tile_h * math.pi / 180 * radius_m / size
+            grad_y, grad_x = np.gradient(grid.astype(np.float64))
+            slope = np.degrees(np.arctan(np.hypot(grad_x / step_x, grad_y / step_y)))[:size, :size]
+            classes = np.digitize(slope, SLOPE_BREAKS_DEG)
+            rgba = np.zeros((size, size, 4), dtype=np.uint8)
+            for cls, color in enumerate(SLOPE_COLORS, start=1):
+                rgba[classes == cls] = color
     except DemUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    radius_m = MARS_RADIUS_KM * 1000.0
-    step_x = tile_w * math.pi / 180 * radius_m * math.cos(math.radians((north + south) / 2)) / size
-    step_y = tile_h * math.pi / 180 * radius_m / size
-    grad_y, grad_x = np.gradient(grid.astype(np.float64))
-    slope = np.degrees(np.arctan(np.hypot(grad_x / step_x, grad_y / step_y)))[:size, :size]
-    classes = np.digitize(slope, SLOPE_BREAKS_DEG)
-    rgba = np.zeros((size, size, 4), dtype=np.uint8)
-    for cls, color in enumerate(SLOPE_COLORS, start=1):
-        rgba[classes == cls] = color
     buffer = BytesIO()
     Image.fromarray(rgba).save(buffer, format="PNG")
     return Response(content=buffer.getvalue(), media_type="image/png",

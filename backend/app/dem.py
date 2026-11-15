@@ -11,6 +11,11 @@ import numpy as np
 
 from .config import settings
 
+try:
+    import astra_dem_rs as _astra_dem_rs
+except Exception:  # pragma: no cover - optional Rust acceleration
+    _astra_dem_rs = None
+
 # Populated by _dem() from the PDS label or the raw file size. The defaults
 # match the 16 ppd MOLA MEGDR grid; the 32 ppd grid is preferred when present.
 WIDTH = 5760
@@ -103,6 +108,12 @@ def pixel_size_km() -> float:
 
 
 def elevation_m(lon: float, lat: float) -> float | None:
+    _dem()
+    if _astra_dem_rs is not None:
+        try:
+            return _astra_dem_rs.elevation_m(str(dem_file()), float(lon), float(lat))
+        except Exception:
+            pass
     dem = _dem()
     x = (lon % 360.0) * PPD - 0.5
     y = (90.0 - lat) * PPD - 0.5
@@ -171,6 +182,14 @@ def _heightmap(
     dem_width: int,
     dem_height: int,
 ) -> np.ndarray:
+    if _astra_dem_rs is not None:
+        try:
+            flat = _astra_dem_rs.heightmap(
+                str(dem_file()), west, south, east, north, width, height
+            )
+            return np.asarray(flat, dtype=np.float32).reshape((height, width))
+        except Exception:
+            pass
     lons = np.linspace(west, east, width)
     lats = np.linspace(north, south, height)
     return _sample_grid(lons, lats).astype(np.float32)
@@ -330,6 +349,26 @@ def _finalize(points: list[dict[str, Any]]) -> dict[str, Any]:
 def _astar(
     lon1: float, lat1: float, lon2: float, lat2: float, max_slope_deg: float
 ) -> list[dict[str, Any]] | None:
+    _dem()
+    if _astra_dem_rs is not None:
+        try:
+            path = _astra_dem_rs.astar(
+                str(dem_file()),
+                float(lon1),
+                float(lat1),
+                float(lon2),
+                float(lat2),
+                float(max_slope_deg),
+            )
+            if path is None:
+                return None
+            return [
+                {"lon": lon, "lat": lat, "elevation_m": elev}
+                for lon, lat, elev in path
+            ]
+        except Exception:
+            pass
+
     pad = 0.4
     lon_min = min(lon1, lon2) - pad
     lon_max = max(lon1, lon2) + pad
