@@ -1280,11 +1280,22 @@ export default function CesiumMap() {
         : presampleCorridor(traverse, terrainProvider)
     }
     /** Start the multi-megabyte vehicle GLB download while the user is
-     *  still reading the plan, not after they press start. */
+     *  still reading the plan, not after they press start. Only fetch the
+     *  rover when the selected traverse actually deploys it; a crew-safe
+     *  route should not spend bandwidth on a model it never uses. */
     const prefetchRouteVehicles = (route: RouteData | null) => {
       if (!route) return
       void prefetchVehicleModel('sev')
-      if (route.hazardous) void prefetchVehicleModel('rover')
+      const choice = useAppStore.getState().routeChoice
+      const traverse = selectTraverse(route, choice)
+      if (!traverse) return
+      const terrain = choice === 'hazardous' && route.hazardous ? route.hazardous : route
+      const assignment = assignVehicle(
+        terrain,
+        route.slope_limit_deg,
+        route.crew_estimate?.profile,
+      )
+      if (assignment.vehicle === 'rover') void prefetchVehicleModel('rover')
     }
 
     /**
