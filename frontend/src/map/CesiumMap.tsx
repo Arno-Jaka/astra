@@ -439,6 +439,10 @@ export default function CesiumMap() {
     }
     retryTerrainRef.current = () => { void loadTerrain() }
     void loadTerrain()
+    // The SEV is the default crew vehicle, so its GLB is useful on every
+    // mission. Download it while the user reads the guide or picks
+    // endpoints; starting the drive then only has to parse memory.
+    void prefetchVehicleModel('sev')
     viewer.scene.globe.showGroundAtmosphere = false
     viewer.scene.globe.depthTestAgainstTerrain = true
     viewer.scene.globe.maximumScreenSpaceError = 2
