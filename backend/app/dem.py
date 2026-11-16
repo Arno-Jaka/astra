@@ -1,4 +1,5 @@
 import heapq
+import importlib.util
 import itertools
 import math
 import re
@@ -11,10 +12,35 @@ import numpy as np
 
 from .config import settings
 
-try:
-    import astra_dem_rs as _astra_dem_rs
-except Exception:  # pragma: no cover - optional Rust acceleration
-    _astra_dem_rs = None
+
+def _load_rust_kernels():
+    """Load the compiled PyO3 extension by path.
+
+    The sibling ``backend/astra_dem_rs`` Cargo crate would otherwise be
+    importable as an empty namespace package and shadow the ``.so``.
+    """
+    try:
+        import astra_dem_rs as module
+
+        if hasattr(module, "heightmap"):
+            return module
+    except Exception:  # pragma: no cover - extension is optional
+        pass
+    try:
+        library = next(Path(__file__).parent.glob("astra_dem_rs*.so"), None)
+        if library is None:
+            return None
+        spec = importlib.util.spec_from_file_location("astra_dem_rs", library)
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:  # pragma: no cover - ABI mismatch or missing build
+        return None
+
+
+_astra_dem_rs = _load_rust_kernels()
 
 # Populated by _dem() from the PDS label or the raw file size. The defaults
 # match the 16 ppd MOLA MEGDR grid; the 32 ppd grid is preferred when present.

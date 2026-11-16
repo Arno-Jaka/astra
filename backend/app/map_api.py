@@ -299,8 +299,13 @@ def slope_tile(z: int, x: int, y: int) -> Response:
     size = 256
     try:
         dem._dem()  # ensure DEM exists and globals are initialized
-        if dem._astra_dem_rs is not None:
-            rgba_flat = dem._astra_dem_rs.slope_rgba(
+        slope_rgba = (
+            getattr(dem._astra_dem_rs, "slope_rgba", None)
+            if dem._astra_dem_rs is not None
+            else None
+        )
+        if slope_rgba is not None:
+            rgba_flat = slope_rgba(
                 str(dem.dem_file()), west, south, east, north, size
             )
             rgba = np.asarray(rgba_flat, dtype=np.uint8).reshape((size, size, 4))
