@@ -22,6 +22,8 @@ INSTRUCTIONS = [
     "Supported sites: Gale Crater, Jezero Crater, Mount Sharp (Aeolis Mons), and other marked Mars sites.",
     "Long traverses are regional MOLA-based previews, not certified drive plans; do not claim an arbitrary distance limit.",
     "Never invent coordinates, weather, science data, or route statistics.",
+    "Tool calls contain only that tool's documented arguments. Never pass ok, route, result, or any output field as an argument, and never fabricate a tool result.",
+    "Call at most one tool per reply, then wait for its result before writing the answer.",
     "Keep replies under 120 words; use short hyphen bullets and never use markdown tables.",
 ]
 

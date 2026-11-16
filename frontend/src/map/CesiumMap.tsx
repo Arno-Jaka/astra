@@ -160,6 +160,11 @@ const SPEED_MIN = 0.25
 const SPEED_MAX = 4
 const SPEED_STEP = 1.5
 
+/** Scene handles for E2E checks: always in dev, or with ?debug=1 in a build. */
+const EXPOSE_DEBUG =
+  import.meta.env.DEV ||
+  new URLSearchParams(window.location.search).has('debug')
+
 /**
  * Terrain pre-sampling for the drive: `sampleTerrain` over route points at
  * ~the rendered tile level gives mesh-consistent heights along the whole
@@ -598,7 +603,7 @@ export default function CesiumMap() {
     const destroyScienceCrew = () => {
       scienceCrew?.destroy()
       scienceCrew = null
-      if (import.meta.env.DEV) (globalThis as unknown as Record<string, unknown>).__astraScienceCrew = null
+      if (EXPOSE_DEBUG) (globalThis as unknown as Record<string, unknown>).__astraScienceCrew = null
     }
     let scoutFrame = 0
     let scoutToken = 0
@@ -677,7 +682,7 @@ export default function CesiumMap() {
       useDriveStore.getState().end()
       useDriveStore.getState().crashed(null)
       useDriveStore.getState().update({ completion: 'idle', missionPhase: 'aboard', crewMessage: '' })
-      if (import.meta.env.DEV) {
+      if (EXPOSE_DEBUG) {
         delete (globalThis as unknown as Record<string, unknown>).__astraScout
         delete (globalThis as unknown as Record<string, unknown>).__astraChase
         if (!preserveCrew) delete (globalThis as unknown as Record<string, unknown>).__astraCrew
@@ -1436,7 +1441,7 @@ export default function CesiumMap() {
           }
           viewer.scene.primitives.add(model)
           scoutModel = model
-          if (import.meta.env.DEV) {
+          if (EXPOSE_DEBUG) {
             ;(globalThis as unknown as Record<string, unknown>).__astraScout =
               model
           }
@@ -1783,7 +1788,7 @@ export default function CesiumMap() {
             const crew = await createScienceCrew(viewer, sample => groundAt(sample, corridor), () => token !== scoutToken)
             if (token !== scoutToken || !crew) { crew?.destroy(); return }
             scienceCrew = crew
-            if (import.meta.env.DEV) (globalThis as unknown as Record<string, unknown>).__astraScienceCrew = crew
+            if (EXPOSE_DEBUG) (globalThis as unknown as Record<string, unknown>).__astraScienceCrew = crew
             crew.spawn(parkSample, site, SCIENCE_META[site.kind].durationS)
             useDriveStore.getState().update({ loading: false })
             chaseActive = false
@@ -1903,7 +1908,7 @@ export default function CesiumMap() {
               sample => groundAt(sample, corridor), () => token !== scoutToken)
             if (token !== scoutToken || !crew) { crew?.destroy(); return }
             surfaceCrew = crew
-            if (import.meta.env.DEV) (globalThis as unknown as Record<string, unknown>).__astraCrew = crew
+            if (EXPOSE_DEBUG) (globalThis as unknown as Record<string, unknown>).__astraCrew = crew
           } catch (error) {
             if (token !== scoutToken) return
             console.error('Crew model loading failed', error)
@@ -2390,7 +2395,7 @@ export default function CesiumMap() {
             })
             useAppStore.getState().setPreviewT(t)
           }
-          if (import.meta.env.DEV) {
+          if (EXPOSE_DEBUG) {
             ;(globalThis as unknown as Record<string, unknown>).__astraChase = {
               bearing,
               distance: orbit.distance,
@@ -2849,7 +2854,7 @@ export default function CesiumMap() {
     prefetchRouteVehicles(useAppStore.getState().route)
     warmCorridor(useAppStore.getState().route)
 
-    if (import.meta.env.DEV) {
+    if (EXPOSE_DEBUG) {
       ;(globalThis as unknown as Record<string, unknown>).__astraViewer =
         viewer
       ;(globalThis as unknown as Record<string, unknown>).__astraProbe = (
@@ -2885,7 +2890,7 @@ export default function CesiumMap() {
       for (const entity of siteEntities) {
         viewer.entities.remove(entity)
       }
-      if (import.meta.env.DEV) {
+      if (EXPOSE_DEBUG) {
         delete (globalThis as unknown as Record<string, unknown>).__astraViewer
         delete (globalThis as unknown as Record<string, unknown>).__astraProbe
         delete (globalThis as unknown as Record<string, unknown>).__astraScout
