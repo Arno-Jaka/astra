@@ -42,9 +42,14 @@ export default function App() {
           : Promise.reject(new Error(String(response.status))),
       )
       .then(setHealth)
-      .catch((cause: unknown) =>
-        setHealthError(cause instanceof Error ? cause.message : String(cause)),
-      )
+      .catch((cause: unknown) => {
+        const detail = cause instanceof Error ? cause.message : String(cause)
+        setHealthError(
+          detail.includes('502')
+            ? `${detail} — backend unavailable, press Refresh`
+            : detail,
+        )
+      })
   }, [])
 
   const send = async (text: string) => {
@@ -75,7 +80,8 @@ export default function App() {
       ])
     } catch (cause) {
       const detail = cause instanceof Error ? cause.message : String(cause)
-      setError(`Could not reach the mission backend (${detail}).`)
+      const hint = detail.includes('502') ? ' Press Refresh and try again.' : ''
+      setError(`Could not reach the mission backend (${detail}).${hint}`)
     } finally {
       setBusy(false)
     }
