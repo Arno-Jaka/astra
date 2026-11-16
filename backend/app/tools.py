@@ -272,6 +272,9 @@ async def plan_route(
                 "dangers": hazards,
                 "hazardous": hazardous,
             },
+            # The browser parses a large route payload and redraws terrain
+            # overlays before acking; allow more than the default.
+            timeout=20.0,
         )
     except CommandError as exc:
         return {"ok": False, "error": str(exc)}

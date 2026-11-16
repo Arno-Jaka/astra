@@ -38,7 +38,12 @@ class CommandChannel:
             if not fut.done():
                 fut.set_exception(CommandError("frontend disconnected"))
 
-    async def send(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def send(
+        self,
+        name: str,
+        payload: dict[str, Any],
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
         ws = self._ws
         if ws is None:
             raise CommandError("frontend not connected")
@@ -50,7 +55,13 @@ class CommandChannel:
             await ws.send_json(
                 {"type": "command", "id": command_id, "name": name, "payload": payload}
             )
-            ack = await asyncio.wait_for(fut, timeout=self._timeout)
+            ack = await asyncio.wait_for(
+                fut, timeout=timeout if timeout is not None else self._timeout
+            )
+        except TimeoutError as exc:
+            # A stale or frozen tab must surface as a normal command failure,
+            # not escape as an unhandled timeout inside the agent.
+            raise CommandError(f"{name} timed out waiting for the frontend") from exc
         finally:
             self._pending.pop(command_id, None)
 
