@@ -19,7 +19,7 @@ Every value shown in ASTRA must come from a backend tool result carrying:
 | Spectral (minerals) | PDS Geosciences / ODE | MRO CRISM | curated targets |
 | Atmospheric (current) | Curiosity REMS live feed (mars.nasa.gov) | MSL REMS | verified; Gale only; station pin on globe |
 | Nomenclature | IAU/USGS Gazetteer + Mars Trek bookmarks | — | curated |
-| 3D rover model | NASA 3D Resources | — | license + record pending |
+| 3D rover model | NASA 3D Resources | — | optimized web copy; see submission credits |
 
 ## Verified endpoints (Nov 9, 2026)
 

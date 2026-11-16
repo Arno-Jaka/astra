@@ -64,6 +64,9 @@ and rover simulation. Cancel stops pending route display.
 
 Interplanetary Survival Guide: Martian Map — NASA Space Apps Challenge 2026.
 
+Judge-facing summary, project details, seven-slide deck outline and NASA
+resource links: [`docs/SUBMISSION.md`](docs/SUBMISSION.md).
+
 ASTRA is a hyperlocal Mars excursion planner. Ask it for a site and it flies the
 globe there, reads the nearest live weather, presents a sourced survival
 briefing, and plans a slope-limited traverse with an elevation profile.
