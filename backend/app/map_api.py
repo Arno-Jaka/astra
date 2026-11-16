@@ -165,6 +165,24 @@ def _to_float(value: Any) -> float | None:
         return None
 
 
+def _weather_provenance(sol: dict[str, Any]) -> dict[str, object]:
+    """Live/cached status and the retrieval time of the shown REMS observation."""
+    status = str(sol.get("_status") or "live")
+    fetched_at = sol.get("_fetched_at") or datetime.now(UTC).isoformat()
+    if status == "cached":
+        note = (
+            "Live NASA/JPL REMS feed is temporarily unavailable; showing the last "
+            f"successful observation retrieved {fetched_at}."
+        )
+    else:
+        note = "NASA/JPL REMS feed is provided for outreach purposes."
+    return {
+        "data_status": status,
+        "retrieved_at": fetched_at,
+        "data_note": note,
+    }
+
+
 @router.get("/weather/station")
 async def weather_station() -> dict[str, object]:
     try:
@@ -187,8 +205,7 @@ async def weather_station() -> dict[str, object]:
         "mission": "Mars Science Laboratory (Curiosity)",
         "instrument": "REMS",
         "source_url": REMS_URL,
-        "data_note": "REMS feed is provided for outreach purposes.",
-        "retrieved_at": datetime.now(UTC).isoformat(),
+        **_weather_provenance(sol),
     }
 
 
@@ -206,6 +223,14 @@ async def weather_point(lon: float, lat: float) -> dict[str, Any]:
     except Exception:
         regional = None
     distance_km = dem._great_circle_km(lon, lat, gale["lon"], gale["lat"])
+    provenance = _weather_provenance(sol)
+    if provenance["data_status"] == "cached":
+        provenance["data_note"] = (
+            "Live NASA/JPL REMS feed is temporarily unavailable; showing the last "
+            f"successful Gale Crater observation retrieved {provenance['retrieved_at']}."
+        )
+    else:
+        provenance["data_note"] = "NASA/JPL REMS feed is provided for outreach purposes (Gale Crater)."
     return {
         "ok": True,
         "requested": {"lon": lon, "lat": lat},
@@ -224,8 +249,7 @@ async def weather_point(lon: float, lat: float) -> dict[str, Any]:
             "mission": "Mars Science Laboratory (Curiosity)",
             "instrument": "REMS",
             "source_url": REMS_URL,
-            "data_note": "REMS feed is provided for outreach purposes (Gale Crater).",
-            "retrieved_at": datetime.now(UTC).isoformat(),
+            **provenance,
         },
         "regional": regional,
         "note": (

@@ -14,6 +14,7 @@ type StationWeather = {
   data_note?: string
   retrieved_at?: string
   instrument?: string
+  data_status?: 'live' | 'cached'
 }
 
 function fmtTemp(min?: number | null, max?: number | null) {
@@ -49,9 +50,17 @@ export default function WeatherCard() {
       <div className="flex items-start justify-between gap-2">
         <div>
           <p className="text-[10px] uppercase tracking-[0.2em] text-orange-300/80">Mars weather</p>
-          <h2 className="text-sm font-semibold text-white">Realtime conditions</h2>
+          <h2 className="text-sm font-semibold text-white">
+            {data?.data_status === 'cached' ? 'Last observed' : 'Realtime conditions'}
+          </h2>
         </div>
-        <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[10px] uppercase tracking-wider text-emerald-300">REMS</span>
+        <span className={`rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wider ${
+          data?.data_status === 'cached'
+            ? 'border-amber-400/30 bg-amber-400/10 text-amber-300'
+            : 'border-emerald-400/30 bg-emerald-400/10 text-emerald-300'
+        }`}>
+          {data?.data_status === 'cached' ? 'Cached' : 'Live'}
+        </span>
       </div>
       {error && <p className="mt-2 text-red-300">{error}</p>}
       {!error && !data && <p className="mt-2 text-neutral-400">Loading…</p>}
@@ -74,7 +83,10 @@ export default function WeatherCard() {
             <span className="text-neutral-500">Opacity:</span> {data.atmo_opacity ?? '—'}
           </p>
           {data.retrieved_at && (
-            <p className="text-[10px] text-neutral-500">Retrieved {new Date(data.retrieved_at).toLocaleString()}</p>
+            <p className="text-[10px] text-neutral-500">
+              {data.data_status === 'cached' ? 'Last retrieved' : 'Retrieved'}{' '}
+              {new Date(data.retrieved_at).toLocaleString()}
+            </p>
           )}
           <p className="text-[10px] leading-relaxed text-neutral-500">{data.data_note}</p>
           {data.source_url && (

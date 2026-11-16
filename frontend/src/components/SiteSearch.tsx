@@ -8,7 +8,7 @@ type Details = {
   background: { title: string; text: string; source_url: string }
 }
 type PointWeather = {
-  station?: { site_name?: string; sol?: string | number; min_temp_c?: number | null; max_temp_c?: number | null; pressure_pa?: number | null; atmo_opacity?: string | null; distance_km?: number; source_url?: string }
+  station?: { site_name?: string; sol?: string | number; min_temp_c?: number | null; max_temp_c?: number | null; pressure_pa?: number | null; atmo_opacity?: string | null; distance_km?: number; source_url?: string; data_status?: 'live' | 'cached' }
   regional?: { nearest?: { name?: string; distance_km?: number; weather?: { min_temp_c?: number; max_temp_c?: number; dust_index?: number; classification?: string } } }
 }
 const caption = (point: Point | null) => point ? point.name ?? point.relative ?? `${point.lat.toFixed(3)}°, ${point.lon.toFixed(3)}°` : 'Not selected'
@@ -24,7 +24,7 @@ function weatherText(data: PointWeather | null | undefined): string {
     const t = st.min_temp_c != null && st.max_temp_c != null ? `${Math.round(st.min_temp_c)}/${Math.round(st.max_temp_c)}°C` : 'temp —'
     const p = st.pressure_pa != null ? `${Math.round(st.pressure_pa)} Pa` : 'pressure —'
     const dist = st.distance_km != null && st.distance_km > 5 ? `, ${Math.round(st.distance_km)} km away` : ''
-    parts.push(`REMS ${st.site_name ?? 'Gale'}${dist}: Sol ${st.sol ?? '—'}, ${t}, ${p}, opacity ${st.atmo_opacity ?? '—'}`)
+    parts.push(`REMS ${st.site_name ?? 'Gale'}${dist}: Sol ${st.sol ?? '—'}, ${t}, ${p}, opacity ${st.atmo_opacity ?? '—'}${st.data_status === 'cached' ? ' (cached)' : ''}`)
   }
   if (reg?.weather) {
     const w = reg.weather
@@ -106,7 +106,7 @@ export default function SiteSearch({ endpoints, busy, onSelect, onReset }: {
       </div>
       {(endpoints.start || endpoints.end) && (
         <p className="text-[10px] text-neutral-500">
-          Weather: realtime NASA/JPL REMS (Curiosity, Gale Crater) + regional screening. <a href="https://mars.nasa.gov/rss/api/?feed=weather&category=msl&feedtype=json" target="_blank" rel="noreferrer" className="underline text-orange-300/80">REMS source</a>
+          Weather: NASA/JPL REMS (Curiosity, Gale Crater) + regional screening. <a href="https://mars.nasa.gov/rss/api/?feed=weather&category=msl&feedtype=json" target="_blank" rel="noreferrer" className="underline text-orange-300/80">REMS source</a>
         </p>
       )}
     </div>

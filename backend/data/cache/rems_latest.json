@@ -1,0 +1,11 @@
+{
+  "sol": {
+    "sol": "4995",
+    "terrestrial_date": "2026-08-25",
+    "min_temp": -71.0,
+    "max_temp": -5.0,
+    "pressure": 777.0,
+    "atmo_opacity": "Sunny"
+  },
+  "fetched_at": "2026-11-15T12:01:03+00:00"
+}
