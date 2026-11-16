@@ -67,7 +67,7 @@ import {
 import { createSlopeOverlayProvider } from './slopeLayer'
 import { contactLift } from './roverContact'
 import { assignVehicle } from './taskAssignment'
-import { vehicleModel } from './vehicleModels'
+import { prefetchVehicleModel, vehicleModel } from './vehicleModels'
 import { planCrewMission } from './crewMission'
 import { createSurfaceCrew, type SurfaceCrew } from './surfaceCrew'
 import { createScienceCrew, type ScienceCrew } from './scienceCrew'
@@ -1219,6 +1219,43 @@ export default function CesiumMap() {
     }
 
     /**
+     * Corridor heights sampled ahead of the start button. Planning a route
+     * already fetches the region's DEM tiles, so sampling here makes the
+     * drive begin as soon as the vehicle model is ready instead of waiting
+     * for a second round of terrain requests.
+     */
+    type CorridorLookup = (distanceKm: number) => number | undefined
+    let corridorWarm: { key: string; promise: Promise<CorridorLookup | null> } | null = null
+    const traverseKey = (traverse: TraversableRoute) => {
+      const first = traverse.coordinates[0]
+      const last = traverse.coordinates[traverse.coordinates.length - 1]
+      return `${traverse.distance_km.toFixed(4)}|${traverse.coordinates.length}|` +
+        `${first?.[0]},${first?.[1]}|${last?.[0]},${last?.[1]}`
+    }
+    const warmCorridor = (route: RouteData | null) => {
+      if (!route || viewer.isDestroyed()) return
+      const traverse = selectTraverse(route, useAppStore.getState().routeChoice)
+      if (!traverse) return
+      const key = traverseKey(traverse)
+      if (corridorWarm?.key === key) return
+      corridorWarm = { key, promise: presampleCorridor(traverse, terrainProvider) }
+      void corridorWarm.promise.catch(() => null)
+    }
+    const corridorFor = (traverse: TraversableRoute) => {
+      const key = traverseKey(traverse)
+      return corridorWarm?.key === key
+        ? corridorWarm.promise
+        : presampleCorridor(traverse, terrainProvider)
+    }
+    /** Start the multi-megabyte vehicle GLB download while the user is
+     *  still reading the plan, not after they press start. */
+    const prefetchRouteVehicles = (route: RouteData | null) => {
+      if (!route) return
+      prefetchVehicleModel('sev')
+      if (route.hazardous) prefetchVehicleModel('rover')
+    }
+
+    /**
      * Rebuild the deterministic off-route science sites for the current route.
      * Sites are offered only on a crew-safe SEV traverse: a robotic rover
      * deployment or a hazardous comparison gets no field stops.
@@ -1319,10 +1356,9 @@ export default function CesiumMap() {
           },
         })
 
-        // Fire the corridor pre-sample in parallel with the model load: it
-        // warms the /api/dem/tile HTTP cache the globe will hit during the
-        // drive and gives the rover mesh-consistent ground heights.
-        const corridorPromise = presampleCorridor(traverse, terrainProvider)
+        // Corridor estimates are usually already warm from the route
+        // preview; if not, sample in parallel with the model load.
+        const corridorPromise = corridorFor(traverse)
 
         try {
           const model = await Model.fromGltfAsync({
@@ -1386,7 +1422,10 @@ export default function CesiumMap() {
               })
             } catch { /* model variants may omit mast scanning */ }
           }
-          await prepareAnimation()
+          // Animation clips are optional and the SEV has none: wire them up
+          // in the background so a missing/deferred clip never delays the
+          // drive from starting.
+          if (vehicle !== 'sev') void prepareAnimation().catch(() => undefined)
         } catch (error) {
           console.warn(`${assignment.label} model failed to load; using marker only.`, error)
         }
@@ -2635,6 +2674,8 @@ export default function CesiumMap() {
         subscribedChoice = state.routeChoice
         removeScout()
         refreshScienceSites()
+        warmCorridor(route)
+        prefetchRouteVehicles(route)
       }
       if (!route) subscribedPhase = 'idle'
       if (!route || viewer.isDestroyed()) return
@@ -2735,6 +2776,8 @@ export default function CesiumMap() {
 
     // A route may already be selected when this component mounts.
     refreshScienceSites()
+    warmCorridor(useAppStore.getState().route)
+    prefetchRouteVehicles(useAppStore.getState().route)
 
     if (import.meta.env.DEV) {
       ;(globalThis as unknown as Record<string, unknown>).__astraViewer =

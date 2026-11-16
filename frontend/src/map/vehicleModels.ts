@@ -18,3 +18,22 @@ export const vehicleModel = (kind: VehicleKind) => kind === 'sev' ? {
 } : {
   url: '/models/perseverance.glb', contacts: WHEEL_CONTACTS, cameraScale: 1, aimHeight: 1.15,
 }
+
+/** Models already requested by the background prefetch. */
+const prefetched = new Set<string>()
+
+/**
+ * Warm the browser HTTP cache before the user presses start, so
+ * `Model.fromGltfAsync` can read the GLB locally instead of waiting on a
+ * multi-megabyte download. Failures are ignored: the real load retries.
+ */
+export function prefetchVehicleModel(kind: VehicleKind) {
+  const { url } = vehicleModel(kind)
+  if (prefetched.has(url)) return
+  prefetched.add(url)
+  void fetch(url, { cache: 'force-cache' })
+    .then((response) => (response.ok ? response.arrayBuffer() : undefined))
+    .catch(() => {
+      prefetched.delete(url)
+    })
+}

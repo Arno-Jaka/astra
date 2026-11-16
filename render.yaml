@@ -11,8 +11,6 @@ services:
         sync: false
       - key: NASA_API_KEY
         sync: false
-      - key: TTS_PROVIDER
-        value: edge
       - key: MOLA_SOURCE_URL
         value: https://pds-geosciences.wustl.edu/mgs/urn-nasa-pds-mgs_mola_topography_derived/
       - key: TREK_IMAGERY_BASE_URL
