@@ -171,7 +171,30 @@ const CORRIDOR = {
   level: 12,
   maxPoints: 400,
   timeoutMs: 6000,
+  skipAboveKm: 120,
 } as const
+
+/**
+ * Longest the start button waits for the vehicle GLB. The download is
+ * prefetched while the user reads the traverse plan; if the link is slow the
+ * mission starts with the marker and the model appears when it finishes.
+ */
+const MODEL_WAIT_MS = 10_000
+
+/**
+ * Terrain level for corridor sampling. Cesium renders coarser tiles the
+ * farther the camera is from the surface, so a long traverse never needs
+ * level 12. Sampling 400 points of a 250 km route at level 12 would request
+ * hundreds of DEM tiles one at a time, saturating the backend while the
+ * vehicle GLB is still downloading. Match the level to the route span.
+ */
+function corridorLevel(distanceKm: number): number {
+  if (distanceKm <= 5) return 12
+  if (distanceKm <= 15) return 11
+  if (distanceKm <= 40) return 10
+  if (distanceKm <= 100) return 9
+  return 8
+}
 
 /** Extra ground clearance per unit of body tilt (metres at full tilt cap). */
 const TILT_CLEARANCE_M = 1.0
@@ -310,6 +333,11 @@ async function presampleCorridor(
 ): Promise<((distanceKm: number) => number | undefined) | null> {
   const points = route.coordinates
   if (points.length < 2) return null
+  // Region-scale traverses are driven from the overview, where route-profile
+  // elevations are accurate enough. Extra tiles would only compete with the
+  // vehicle model download and the tiles the globe streams during the drive.
+  if (route.distance_km > CORRIDOR.skipAboveKm) return null
+  const level = corridorLevel(route.distance_km)
   const stride = Math.max(1, Math.ceil(points.length / CORRIDOR.maxPoints))
   const indices: number[] = []
   for (let index = 0; index < points.length; index += stride) {
@@ -326,7 +354,7 @@ async function presampleCorridor(
     setTimeout(() => resolve(null), CORRIDOR.timeoutMs)
   })
   const sampled = await Promise.race([
-    sampleTerrain(provider, CORRIDOR.level, positions).catch(() => null),
+    sampleTerrain(provider, level, positions).catch(() => null),
     timer,
   ])
   if (!sampled) return null
@@ -1251,8 +1279,8 @@ export default function CesiumMap() {
      *  still reading the plan, not after they press start. */
     const prefetchRouteVehicles = (route: RouteData | null) => {
       if (!route) return
-      prefetchVehicleModel('sev')
-      if (route.hazardous) prefetchVehicleModel('rover')
+      void prefetchVehicleModel('sev')
+      if (route.hazardous) void prefetchVehicleModel('rover')
     }
 
     /**
@@ -1360,15 +1388,33 @@ export default function CesiumMap() {
         // preview; if not, sample in parallel with the model load.
         const corridorPromise = corridorFor(traverse)
 
-        try {
-          const model = await Model.fromGltfAsync({
-            url: activeVehicleModel.url,
-            // A fixed physical scale is essential for terrain contact.
-            scale: 1,
-            modelMatrix: Transforms.eastNorthUpToFixedFrame(
-              Cartesian3.fromDegrees(startSample.lon, startSample.lat, groundAt(startSample, null) + ROVER_GROUND_CLEARANCE, MARS), MARS,
-            ),
-          })
+        // Load the vehicle from the bytes already downloaded while the plan
+        // was on screen. Cesium parses the in-memory Blob instead of opening
+        // a second download that would compete with the first.
+        const modelSpec = activeVehicleModel
+        const stageModel = async () => {
+          const bytes = await prefetchVehicleModel(vehicle)
+          let objectUrl: string | null = null
+          if (bytes) {
+            objectUrl = URL.createObjectURL(
+              new Blob([bytes.buffer as ArrayBuffer], {
+                type: 'model/gltf-binary',
+              }),
+            )
+          }
+          let model: Model
+          try {
+            model = await Model.fromGltfAsync({
+              url: objectUrl ?? modelSpec.url,
+              // A fixed physical scale is essential for terrain contact.
+              scale: 1,
+              modelMatrix: Transforms.eastNorthUpToFixedFrame(
+                Cartesian3.fromDegrees(startSample.lon, startSample.lat, groundAt(startSample, null) + ROVER_GROUND_CLEARANCE, MARS), MARS,
+              ),
+            })
+          } finally {
+            if (objectUrl) URL.revokeObjectURL(objectUrl)
+          }
           if (token !== scoutToken) {
             model.destroy()
             return
@@ -1426,9 +1472,18 @@ export default function CesiumMap() {
           // in the background so a missing/deferred clip never delays the
           // drive from starting.
           if (vehicle !== 'sev') void prepareAnimation().catch(() => undefined)
-        } catch (error) {
-          console.warn(`${assignment.label} model failed to load; using marker only.`, error)
         }
+        const modelPromise = stageModel().catch((error) => {
+          console.warn(`${assignment.label} model failed to load; using marker only.`, error)
+        })
+        // Never let a stalled GLB keep the mission in "preparing terrain":
+        // after the cap the drive starts with the marker, and the model pops
+        // in as soon as it is ready.
+        await Promise.race([
+          modelPromise,
+          new Promise<void>((resolve) => setTimeout(resolve, MODEL_WAIT_MS)),
+        ])
+        if (token !== scoutToken) return
 
         const corridor = await corridorPromise
         if (token !== scoutToken) return
@@ -2674,8 +2729,8 @@ export default function CesiumMap() {
         subscribedChoice = state.routeChoice
         removeScout()
         refreshScienceSites()
-        warmCorridor(route)
         prefetchRouteVehicles(route)
+        warmCorridor(route)
       }
       if (!route) subscribedPhase = 'idle'
       if (!route || viewer.isDestroyed()) return
@@ -2776,8 +2831,8 @@ export default function CesiumMap() {
 
     // A route may already be selected when this component mounts.
     refreshScienceSites()
-    warmCorridor(useAppStore.getState().route)
     prefetchRouteVehicles(useAppStore.getState().route)
+    warmCorridor(useAppStore.getState().route)
 
     if (import.meta.env.DEV) {
       ;(globalThis as unknown as Record<string, unknown>).__astraViewer =

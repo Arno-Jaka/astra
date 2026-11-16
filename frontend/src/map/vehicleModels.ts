@@ -19,21 +19,27 @@ export const vehicleModel = (kind: VehicleKind) => kind === 'sev' ? {
   url: '/models/perseverance.glb', contacts: WHEEL_CONTACTS, cameraScale: 1, aimHeight: 1.15,
 }
 
-/** Models already requested by the background prefetch. */
-const prefetched = new Set<string>()
+/** In-flight prefetches, keyed by model URL. */
+const prefetched = new Map<string, Promise<Uint8Array | null>>()
 
 /**
- * Warm the browser HTTP cache before the user presses start, so
- * `Model.fromGltfAsync` can read the GLB locally instead of waiting on a
- * multi-megabyte download. Failures are ignored: the real load retries.
+ * Warm the vehicle GLB before the user presses start and return the same
+ * bytes the simulation hands to Cesium. Sharing one request avoids a
+ * second multi-megabyte download while the first one is still in flight.
+ * A failed request is forgotten so a later start can retry.
  */
-export function prefetchVehicleModel(kind: VehicleKind) {
+export function prefetchVehicleModel(kind: VehicleKind): Promise<Uint8Array | null> {
   const { url } = vehicleModel(kind)
-  if (prefetched.has(url)) return
-  prefetched.add(url)
-  void fetch(url, { cache: 'force-cache' })
-    .then((response) => (response.ok ? response.arrayBuffer() : undefined))
+  const existing = prefetched.get(url)
+  if (existing) return existing
+
+  const request = fetch(url, { cache: 'force-cache' })
+    .then((response) => (response.ok ? response.arrayBuffer() : null))
+    .then((buffer) => (buffer ? new Uint8Array(buffer) : null))
     .catch(() => {
       prefetched.delete(url)
+      return null
     })
+  prefetched.set(url, request)
+  return request
 }
